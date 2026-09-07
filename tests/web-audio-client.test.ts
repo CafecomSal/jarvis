@@ -17,6 +17,19 @@ describe('cliente web de áudio', () => {
     expect(JSON.parse(String(request?.body))).toMatchObject({ mimeType: 'audio/wav', audioBase64: 'd2F2' });
   });
 
+  it('envia a duração medida quando o container não a carrega', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      JSON.stringify({ session: { id: 'audio-2' }, conversation: { answer: 'ok' }, audio: { audioBase64: 'd2F2', mimeType: 'audio/wav' } }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ));
+    const client = new JarvisApiClient({ fetchImpl });
+
+    await client.postPcAudio(new Blob([new Uint8Array([119, 97, 118])], { type: 'audio/webm;codecs=opus' }), 1_250);
+
+    const request = fetchImpl.mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toMatchObject({ mimeType: 'audio/webm', durationMs: 1_250 });
+  });
+
   it('mantém o request de áudio aberto além do timeout curto das APIs comuns', async () => {
     vi.useFakeTimers();
     try {

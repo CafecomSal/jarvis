@@ -43,16 +43,23 @@ export class AudioPipeline {
     mimeType: string,
     source: AudioSource,
     ttsTarget: 'pc' | 'alexa' = source === 'alexa' ? 'alexa' : 'pc',
+    durationMs?: number,
   ): Promise<AudioPipelineResult> {
     if (audio.length === 0) throw new Error('Audio payload must not be empty');
     if (audio.length > this.maxBytes) throw new Error(`Audio payload exceeds ${this.maxBytes} bytes`);
     if (!mimeType.trim()) throw new Error('Audio mimeType must not be empty');
+    if (durationMs !== undefined && (!Number.isFinite(durationMs) || durationMs < 0)) {
+      throw new Error('Audio durationMs must be non-negative');
+    }
 
     const id = `audio-${randomUUID()}`;
     const startedAt = this.now();
     const startedAtMs = performance.now();
     try {
-      const transcript = await this.options.stt.transcribe(audio, mimeType, { sessionId: id });
+      const transcript = await this.options.stt.transcribe(audio, mimeType, {
+        sessionId: id,
+        ...(durationMs === undefined ? {} : { audioDurationSeconds: durationMs / 1_000 }),
+      });
       const conversation = await this.options.respond(transcript.text);
       const audioResult = await this.options.tts.synthesize({ text: conversation.answer, language: 'pt-BR' });
       const endedAt = this.now();

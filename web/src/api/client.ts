@@ -223,7 +223,7 @@ export class JarvisApiClient {
     return this.request<{ events: Array<Record<string, unknown>> }>(`/events${query}`);
   }
 
-  async postPcAudio(blob: Blob): Promise<AudioPipelineResponse> {
+  async postPcAudio(blob: Blob, durationMs?: number): Promise<AudioPipelineResponse> {
     const bytes = new Uint8Array(await blob.arrayBuffer());
     let binary = '';
     const chunkSize = 0x8000;
@@ -235,7 +235,11 @@ export class JarvisApiClient {
     return this.request<AudioPipelineResponse>('/audio/pc', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ mimeType, audioBase64 }),
+      body: JSON.stringify({
+        mimeType,
+        audioBase64,
+        ...(durationMs === undefined ? {} : { durationMs }),
+      }),
     }, this.audioTimeoutMs);
   }
 

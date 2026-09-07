@@ -7,6 +7,10 @@
 > Plataforma: Windows 11 + Git Bash/MSYS  
 > Status do documento: baseado no código atual, nos testes executados e nos probes reais descritos abaixo.
 
+> Atualização de decisão em 2026-09-07: por solicitação explícita do responsável, a dashboard passou a usar Groq Whisper como provider único, com `whisper-large-v3-turbo` e `whisper-large-v3` como opções. Local/Automático, Faster-Whisper e fallback local não aparecem mais na UI; o backend legado permanece somente para compatibilidade/migração. Os settings persistidos desta máquina foram migrados para `route=groq`, `cloudEnabled=true`, `fallback=none`; a fixture sintética foi enviada à Groq apenas no benchmark autorizado, sem áudio humano incluído no relatório.
+
+> Atualização operacional em 2026-09-07: a tarefa persistente `Jarvis Core` foi iniciada a pedido do responsável; a dashboard responde em `127.0.0.1:3000`, o Core está saudável e o áudio efetivo é Groq STT + Piper CPU. A próxima frente recomendada é a calibração/robustez do detector ONNX e do vertical slice AI + DVR, conforme o plano atualizado.
+
 ---
 
 > Atualização da execução durável em 2026-09-06: o supervisor Windows foi implementado, exercitado e endurecido contra PID reutilizado, corrida de parada, processos externos e falhas de readiness. A tarefa Jarvis Core foi instalada no Task Scheduler e lida de volta com ação, usuário, trigger, diretório e políticas correspondentes. O último smoke encerrou somente Core/Ollama próprios; PostgreSQL externo foi preservado. O estado final desta sessão é deliberadamente parado. Foi criado o backup local CODEX_HANDOFF.md.bak-2026-09-06-durable-ops antes desta atualização.

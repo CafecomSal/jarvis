@@ -8,7 +8,7 @@ npm run benchmark:stt -- --audio data/audio/tts/piper-smoke.wav
 npm run benchmark:stt -- --audio <fixture.wav> --expected "<frase redigida>"
 ```
 
-O script executa o mesmo áudio contra Faster-Whisper local e, somente quando `GROQ_API_KEY` está presente no backend, contra:
+O script executa o mesmo áudio contra os dois modelos Groq, somente quando `GROQ_API_KEY` está presente no backend:
 
 - `whisper-large-v3-turbo`;
 - `whisper-large-v3`.
@@ -51,11 +51,11 @@ Fixture: `data/audio/tts/piper-smoke.wav` (áudio sintetizado pelo próprio Pipe
 }
 ```
 
-O texto retornado pela fixture foi omitido/redigido porque a amostra contém um nome. A execução confirmou que o local `medium` funciona, mas não permite comparar qualidade Groq nem validar fala espontânea.
+O texto retornado pela fixture foi omitido/redigido porque a amostra contém um nome. O resultado acima é histórico e registra a execução anterior do provider local; o script atual não o executa mais. A fixture sintetizada também não valida fala espontânea.
 
 ## Interpretação
 
-- O default permanece `route=local`, `cloudEnabled=false`.
-- Groq não foi promovido nem cobrado nesta execução.
+- A dashboard usa `route=groq`, `fallback=none` e exige confirmação antes de enviar áudio.
+- A execução histórica não promoveu nem cobrou Groq; os dois modelos aparecem como candidatos independentes.
 - Para decisão de promoção, repetir com várias frases PT-BR humanas autorizadas, expectativas redigidas e a mesma captura em ambos os providers; comparar p50/p95, WER e percepção de entendimento.
 - O limite local de 10 s faturáveis e o custo estimado devem continuar sendo tratados como aproximações até confirmar os headers/console da organização.

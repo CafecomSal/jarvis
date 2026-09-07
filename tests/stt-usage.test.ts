@@ -4,7 +4,7 @@ import {
   SttQuotaGuard,
   type SttQuotaLimits,
 } from '../src/audio/stt-usage-store.js';
-import { parseAudioDurationSeconds } from '../src/audio/audio-duration-probe.js';
+import { FfprobeAudioDurationProbe, parseAudioDurationSeconds, parseWavDurationSeconds } from '../src/audio/audio-duration-probe.js';
 
 const limits: SttQuotaLimits = {
   maxRequestsPerDay: 2,
@@ -56,5 +56,26 @@ describe('parser de duração de áudio', () => {
     expect(parseAudioDurationSeconds('0')).toBe(0);
     expect(parseAudioDurationSeconds('N/A')).toBeUndefined();
     expect(parseAudioDurationSeconds('-1')).toBeUndefined();
+  });
+
+  it('usa o cabeçalho WAV quando ffprobe recebe stdin não-seekable', async () => {
+    const audio = Buffer.alloc(44 + 32_000);
+    audio.write('RIFF', 0, 'ascii');
+    audio.writeUInt32LE(audio.length - 8, 4);
+    audio.write('WAVE', 8, 'ascii');
+    audio.write('fmt ', 12, 'ascii');
+    audio.writeUInt32LE(16, 16);
+    audio.writeUInt16LE(1, 20);
+    audio.writeUInt16LE(1, 22);
+    audio.writeUInt32LE(16_000, 24);
+    audio.writeUInt32LE(32_000, 28);
+    audio.writeUInt16LE(2, 32);
+    audio.writeUInt16LE(16, 34);
+    audio.write('data', 36, 'ascii');
+    audio.writeUInt32LE(audio.length - 44, 40);
+
+    expect(parseWavDurationSeconds(audio)).toBe(1);
+    const probe = new FfprobeAudioDurationProbe({ runner: async () => 'N/A' });
+    await expect(probe.probe(audio, 'audio/wav')).resolves.toBe(1);
   });
 });

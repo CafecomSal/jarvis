@@ -22,11 +22,11 @@ const pipelineResult: AudioPipelineResult = {
 
 describe('API de push-to-talk', () => {
   it('decodifica áudio limitado e retorna sessão/resposta sem persistir base64', async () => {
-    const received: { audio: Buffer; mimeType: string }[] = [];
+    const received: { audio: Buffer; mimeType: string; durationMs?: number }[] = [];
     const app = buildApp({
       audioPipeline: {
-        process: async (audio, mimeType) => {
-          received.push({ audio, mimeType });
+        process: async (audio, mimeType, _source, _ttsTarget, durationMs) => {
+          received.push({ audio, mimeType, durationMs });
           return pipelineResult;
         },
       },
@@ -35,12 +35,12 @@ describe('API de push-to-talk', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/audio/pc',
-      payload: { mimeType: 'audio/wav', audioBase64: Buffer.from('input').toString('base64') },
+      payload: { mimeType: 'audio/wav', audioBase64: Buffer.from('input').toString('base64'), durationMs: 1_250 },
     });
     await app.close();
 
     expect(response.statusCode).toBe(200);
-    expect(received).toEqual([{ audio: Buffer.from('input'), mimeType: 'audio/wav' }]);
+    expect(received).toEqual([{ audio: Buffer.from('input'), mimeType: 'audio/wav', durationMs: 1_250 }]);
     expect(response.json()).toMatchObject({ session: { id: 'audio-route-1' }, audio: { provider: 'fixture-tts', audioBase64: 'd2F2' } });
   });
 

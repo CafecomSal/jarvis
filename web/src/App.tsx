@@ -72,6 +72,11 @@ function StatusTone(status: string): 'ok' | 'warn' | 'danger' | 'neutral' {
 function OverviewPage({ health }: { health: SystemHealthSnapshot | null }) {
   if (!health) return <Loading />;
   const statusTone = StatusTone(health.status);
+  const audioSummary = health.audio.status !== 'configured'
+    ? 'Áudio: provider ainda não ativado'
+    : health.audio.source?.startsWith('Groq')
+      ? 'Groq STT + Piper TTS disponíveis'
+      : 'Áudio STT/TTS disponível';
   return (
     <div className="page-stack">
       <div className="hero-card">
@@ -96,7 +101,7 @@ function OverviewPage({ health }: { health: SystemHealthSnapshot | null }) {
             <li><span className="signal-dot signal-ok" /> Detecção YOLO/ONNX separada</li>
             <li><span className="signal-dot signal-ok" /> Timeline e catálogo de gravações</li>
             <li><span className="signal-dot signal-ok" /> Tags derivadas de objetos e OCR</li>
-            <li><span className={`signal-dot ${health.audio.status === 'configured' ? 'signal-ok' : 'signal-warn'}`} /> {health.audio.status === 'configured' ? 'Áudio local STT/TTS disponível' : 'Áudio: provider ainda não ativado'}</li>
+            <li><span className={`signal-dot ${health.audio.status === 'configured' ? 'signal-ok' : 'signal-warn'}`} /> {audioSummary}</li>
           </ul>
         </Card>
         <Card>
@@ -271,21 +276,6 @@ function ChatPage() {
   );
 }
 
-function AudioPage() {
-  const [sessions, setSessions] = useState<AudioSession[]>([]);
-  const [recording, setRecording] = useState(false);
-  const [message, setMessage] = useState('');
-  async function requestMic() {
-    if (!navigator.mediaDevices?.getUserMedia) { setMessage('Este navegador não expõe captura de microfone.'); return; }
-    try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); stream.getTracks().forEach((track) => track.stop()); setRecording(true); setMessage('Microfone autorizado; o provider STT será conectado na próxima etapa.'); }
-    catch { setMessage('Permissão de microfone recusada ou indisponível.'); }
-  }
-  useEffect(() => { void api.getAudioSessions('?limit=20').then((result) => setSessions(result.sessions)).catch(() => setSessions([])); }, []);
-  return (
-    <div className="page-stack"><div className="section-intro"><div><div className="eyebrow">VOICE ROUTER</div><h2>Áudio</h2><p>PC push-to-talk e Alexa via Home Assistant, com provider explicitamente identificado.</p></div><Pill tone="warn">provider local pendente</Pill></div><div className="content-grid two-columns"><Card className="voice-card"><div className="voice-orb"><span>{recording ? '●' : '◖'}</span></div><h3>{recording ? 'Microfone pronto' : 'Push-to-talk'}</h3><p>O atalho global será configurável; por enquanto, valide a permissão pelo navegador.</p><button className="button primary wide" onClick={() => void requestMic()}>{recording ? 'Testar novamente' : 'Autorizar microfone'}</button>{message && <div className="callout"><strong>Estado</strong><span>{message}</span></div>}</Card><Card><div className="card-heading"><div><div className="eyebrow">DESTINOS</div><h3>Roteamento</h3></div><span className="card-symbol">◖</span></div><div className="health-rows"><div><span>PC mic</span><Pill tone={recording ? 'ok' : 'warn'}>{recording ? 'autorizado' : 'pendente'}</Pill></div><div><span>PC speaker</span><Pill tone="warn">provider pendente</Pill></div><div><span>Alexa / HA</span><Pill tone="warn">entity pendente</Pill></div><div><span>Cloud fallback</span><Pill tone="neutral">desligado</Pill></div></div></Card></div><AudioSessionManager api={api} sessions={sessions} onDeleted={(ids) => setSessions((current) => removeDeletedAudioSessions(current, ids))} /><Card><div className="card-heading"><div><div className="eyebrow">HISTÓRICO</div><h3>Sessões recentes</h3></div><span className="muted">{sessions.length} sessões</span></div>{sessions.length ? <div className="timeline-list">{sessions.map((session) => <div className="timeline-row" key={session.id}><div className="timeline-icon timeline-event">◖</div><div className="timeline-main"><strong>{session.source} · {session.status}</strong><span>{formatTimestamp(session.startedAt)}</span></div><div className="timeline-meta"><span>{session.transcript?.text ?? 'sem transcript'}</span></div></div>)}</div> : <Empty title="Nenhuma sessão de áudio" detail="O histórico só será criado quando um provider for habilitado e uma sessão terminar." />}</Card></div>
-  );
-}
-
 function AudioPageV2() {
   const [sessions, setSessions] = useState<AudioSession[]>([]);
   const [recording, setRecording] = useState(false);
@@ -294,6 +284,7 @@ function AudioPageV2() {
   const [answer, setAnswer] = useState('');
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const recordingStartedAtRef = useRef<number | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const pressLatchRef = useRef(new PushToTalkLatch());
   const [audioInputs, setAudioInputs] = useState<Array<{ deviceId: string; label: string }>>([]);
@@ -350,13 +341,16 @@ function AudioPageV2() {
       recorder.ondataavailable = (event) => { if (event.data.size > 0) chunksRef.current.push(event.data); };
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
+        const recordingStartedAt = recordingStartedAtRef.current;
+        const durationMs = recordingStartedAt === null ? undefined : Math.max(0, performance.now() - recordingStartedAt);
+        recordingStartedAtRef.current = null;
         stream.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
         recorderRef.current = null;
         setRecording(false);
         if (blob.size === 0) { setMessage('Nenhum áudio foi capturado.'); return; }
         setBusy(true); setMessage('transcrevendo pelo router…');
-        void api.postPcAudio(blob).then((result) => {
+        void api.postPcAudio(blob, durationMs).then((result) => {
           setAnswer(result.conversation.answer);
           setMessage(`STT ${latencyValue(result.session.transcript?.latencyMs)} · total ${latencyValue(result.session.pipelineLatencyMs)} · TTS ${latencyValue(result.audio.latencyMs)}`);
           setSessions((current) => [result.session, ...current].slice(0, 20));
@@ -371,6 +365,7 @@ function AudioPageV2() {
         return;
       }
       recorder.start();
+      recordingStartedAtRef.current = performance.now();
       setRecording(true);
       setMessage('ouvindo… solte para enviar');
     } catch {
@@ -396,7 +391,7 @@ function AudioPageV2() {
   }
 
   return (
-    <div className="page-stack"><div className="section-intro"><div><div className="eyebrow">VOICE ROUTER</div><h2>Áudio</h2><p>Segure o botão para falar. O PC usa o router local/Groq; Alexa permanece como canal HA híbrido.</p></div><Pill tone={busy ? 'warn' : recording ? 'ok' : 'neutral'}>{busy ? 'processando' : recording ? 'ouvindo' : 'push-to-talk'}</Pill></div><div className="content-grid two-columns"><Card className="voice-card"><div className="voice-orb"><span>{recording ? '●' : '◖'}</span></div><h3>{recording ? 'Solte para enviar' : 'Segure para falar'}</h3><p>O áudio bruto é enviado somente durante a sessão e não é persistido no histórico.</p>{audioInputs.length > 0 && <label className="audio-input-picker"><span>Entrada</span><select aria-label="Selecionar microfone" value={selectedAudioInput} disabled={busy || recording} onChange={(event) => setSelectedAudioInput(event.target.value)}>{audioInputs.map((input) => <option key={input.deviceId} value={input.deviceId}>{input.label}</option>)}</select></label>}<button className="button primary wide" disabled={busy} onPointerDown={pressToTalk} onPointerUp={releaseToTalk} onPointerLeave={releaseToTalk} onPointerCancel={releaseToTalk} onKeyDown={(event) => { if (!event.repeat && (event.key === ' ' || event.key === 'Enter')) pressToTalk(); }} onKeyUp={(event) => { if (event.key === ' ' || event.key === 'Enter') releaseToTalk(); }}>{recording ? '● Gravando' : '◖ Push-to-talk'}</button>{message && <div className="callout"><strong>Estado</strong><span>{message}</span></div>}{answer && <div className="voice-result"><div className="eyebrow">RESPOSTA</div><p>{answer}</p></div>}</Card><Card><div className="card-heading"><div><div className="eyebrow">DESTINOS</div><h3>Roteamento</h3></div><span className="card-symbol">◖</span></div><div className="health-rows"><div><span>PC microphone</span><Pill tone={recording ? 'ok' : 'neutral'}>{recording ? 'capturando' : 'pronto'}</Pill></div><div><span>PC speaker</span><Pill tone={answer ? 'ok' : 'warn'}>{answer ? 'resposta pronta' : 'Piper protegido'}</Pill></div><div><span>Alexa / HA</span><Pill tone="warn">descoberta pendente</Pill></div><div><span>STT cloud</span><Pill tone="neutral">opt-in</Pill></div></div></Card></div><AudioSessionManager api={api} sessions={sessions} onDeleted={(ids) => setSessions((current) => removeDeletedAudioSessions(current, ids))} /><Card><div className="card-heading"><div><div className="eyebrow">HISTÓRICO</div><h3>Sessões recentes</h3></div><span className="muted">{sessions.length} sessões</span></div>{sessions.length ? <div className="timeline-list">{sessions.map((session) => <div className="timeline-row" key={session.id}><div className="timeline-icon timeline-event">◖</div><div className="timeline-main"><strong>{session.source} · {session.status} · {session.transcript?.processingLocation ?? 'local'} · {session.transcript?.provider ?? '—'} / {session.transcript?.model ?? '—'}</strong><span>{formatTimestamp(session.startedAt)} · STT {latencyValue(session.transcript?.latencyMs)} · total {latencyValue(session.pipelineLatencyMs)}</span></div><div className="timeline-meta"><span>{session.transcript?.text ?? 'sem transcript'}</span></div></div>)}</div> : <Empty title="Nenhuma sessão de áudio" detail="Habilite o pipeline de áudio para criar o primeiro registro." />}</Card></div>
+    <div className="page-stack"><div className="section-intro"><div><div className="eyebrow">VOICE ROUTER</div><h2>Áudio</h2><p>Segure o botão para falar. O PC usa Groq Whisper; Alexa permanece como canal HA híbrido.</p></div><Pill tone={busy ? 'warn' : recording ? 'ok' : 'neutral'}>{busy ? 'processando' : recording ? 'ouvindo' : 'push-to-talk'}</Pill></div><div className="content-grid two-columns"><Card className="voice-card"><div className="voice-orb"><span>{recording ? '●' : '◖'}</span></div><h3>{recording ? 'Solte para enviar' : 'Segure para falar'}</h3><p>O áudio bruto é enviado somente durante a sessão e não é persistido no histórico.</p>{audioInputs.length > 0 && <label className="audio-input-picker"><span>Entrada</span><select aria-label="Selecionar microfone" value={selectedAudioInput} disabled={busy || recording} onChange={(event) => setSelectedAudioInput(event.target.value)}>{audioInputs.map((input) => <option key={input.deviceId} value={input.deviceId}>{input.label}</option>)}</select></label>}<button className="button primary wide" disabled={busy} onPointerDown={pressToTalk} onPointerUp={releaseToTalk} onPointerLeave={releaseToTalk} onPointerCancel={releaseToTalk} onKeyDown={(event) => { if (!event.repeat && (event.key === ' ' || event.key === 'Enter')) pressToTalk(); }} onKeyUp={(event) => { if (event.key === ' ' || event.key === 'Enter') releaseToTalk(); }}>{recording ? '● Gravando' : '◖ Push-to-talk'}</button>{message && <div className="callout"><strong>Estado</strong><span>{message}</span></div>}{answer && <div className="voice-result"><div className="eyebrow">RESPOSTA</div><p>{answer}</p></div>}</Card><Card><div className="card-heading"><div><div className="eyebrow">DESTINOS</div><h3>Roteamento</h3></div><span className="card-symbol">◖</span></div><div className="health-rows"><div><span>PC microphone</span><Pill tone={recording ? 'ok' : 'neutral'}>{recording ? 'capturando' : 'pronto'}</Pill></div><div><span>PC speaker</span><Pill tone={answer ? 'ok' : 'warn'}>{answer ? 'resposta pronta' : 'Piper protegido'}</Pill></div><div><span>Alexa / HA</span><Pill tone="warn">descoberta pendente</Pill></div><div><span>STT cloud</span><Pill tone="neutral">opt-in</Pill></div></div></Card></div><AudioSessionManager api={api} sessions={sessions} onDeleted={(ids) => setSessions((current) => removeDeletedAudioSessions(current, ids))} /><Card><div className="card-heading"><div><div className="eyebrow">HISTÓRICO</div><h3>Sessões recentes</h3></div><span className="muted">{sessions.length} sessões</span></div>{sessions.length ? <div className="timeline-list">{sessions.map((session) => <div className="timeline-row" key={session.id}><div className="timeline-icon timeline-event">◖</div><div className="timeline-main"><strong>{session.source} · {session.status} · {session.transcript?.processingLocation ?? 'local'} · {session.transcript?.provider ?? '—'} / {session.transcript?.model ?? '—'}</strong><span>{formatTimestamp(session.startedAt)} · STT {latencyValue(session.transcript?.latencyMs)} · total {latencyValue(session.pipelineLatencyMs)}</span></div><div className="timeline-meta"><span>{session.transcript?.text ?? 'sem transcript'}</span></div></div>)}</div> : <Empty title="Nenhuma sessão de áudio" detail="Habilite o pipeline de áudio para criar o primeiro registro." />}</Card></div>
   );
 }
 

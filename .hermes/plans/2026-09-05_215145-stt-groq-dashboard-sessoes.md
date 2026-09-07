@@ -760,7 +760,7 @@ A documentação deve dizer explicitamente que `GROQ_API_KEY` existe apenas no a
 
 ---
 
-## 5. Resultados reais da execução — 2026-09-06
+## 5. Resultados reais da execução — 2026-09-07
 
 ### Implementado
 
@@ -771,30 +771,32 @@ A documentação deve dizer explicitamente que `GROQ_API_KEY` existe apenas no a
 - Quota local com requests/segundos por dia, custo estimado acumulado por mês UTC, mínimo faturável de 10 s e idempotência por `sessionId`.
 - Limpeza manual `preview → confirmação exata → delete bounded`, revalidação de `id + status + startedAt`, redaction da auditoria vinculada e tombstone preservado.
 - Scheduler de retenção automática opt-in, desligado por default.
-- Dashboard com rota/modelos/idioma/fallback/timeout/quota/retenção, estado local/cloud, TTS Piper protegido e gerenciamento de sessões.
+- Dashboard com modelo Groq/idioma/timeout/quota/retenção, estado cloud, TTS Piper protegido e gerenciamento de sessões; a UI não oferece mais Local/Automático, Faster-Whisper ou fallback local.
 - Cliente web com timeout próprio de 180 s para o pipeline completo; APIs comuns permanecem em 30 s.
+- Duração informada pelo browser no `POST /audio/pc`, com fallback RIFF bounded para WAV não seekable, evitando falso bloqueio de quota.
 - Piper real resolvido pelo executável `piper` do PATH ou `PIPER_COMMAND`, sem forçar o Python do runtime Hermes.
 - Fallback de resolução de migrations para boot compilado em `dist/`.
 
 ### Evidências verificadas
 
 - Focadas: provider/router/runtime/quota/retenção/UI verdes.
-- Suíte final: **109 arquivos passados, 2 pulados; 277 testes passados e 2 pulados** no comando padrão sem carregar `.env`; os testes PostgreSQL de áudio e quota foram executados separadamente com `node --env-file=.env` e passaram.
+- Suíte final: **110 arquivos passados, 3 pulados; 282 testes passados e 3 pulados** em worker único; o modo paralelo apresentou OOM do worker, sem falha de asserção.
 - Testes PostgreSQL executados explicitamente com `node --env-file=.env`: `PostgresAudioSessionStore` e `PostgresSttUsageStore` passaram; os fixtures foram limpos ao final (`test-pg-audio-session-001` e `test-pg-stt-usage-001-*`).
 - `npm run build` passou; `npm start` em porta isolada `3001` iniciou a partir de `dist/` e foi encerrado após o smoke.
 - Core real: `/system/health` `ok`; `ollama.loadedModels=[gemma-hermes:latest]`; GPU com um único modelo neural; `ffmpeg.exe=0`; bind loopback e exposição `tailscale-only`.
-- Core real: `GET /settings` retornou `route=local`, `localModel=medium`, `cloudEnabled=false`, `cloudConfigured=false`, Piper `pt_BR-jeff-medium` e nenhum segredo.
+- Core real: `GET /settings` e `/system/health` confirmaram `route=groq`, `groqModel=whisper-large-v3-turbo`, `fallback=none`, `cloudEnabled=true`, provider ativo Groq, Piper CPU e nenhum segredo.
 - Core real: preview de retenção antes de 2026-08-07 retornou `count=0`, sem transcript/response no payload; nenhuma sessão real foi apagada.
-- Benchmark real com fixture sintetizada Piper de 188.460 bytes: Faster-Whisper `medium` local em 13.358 ms, confiança 0,6976, Groq `skipped` por ausência de `GROQ_API_KEY`.
+- Benchmark live com a mesma fixture sintetizada Piper de 188.460 bytes: `whisper-large-v3-turbo` em 534 ms, confiança 0,6405; `whisper-large-v3` em 480 ms, confiança 0,6094. Nenhum transcript pessoal foi incluído no relatório.
 - Piper real: executável `piper` gerou WAV de 130.092 bytes em 2.135 ms.
 - Smoke integrado definitivo após o último restart: sessão `completed`, STT local `medium` em 6.344 ms, pipeline total em 21.643 ms, Piper e resposta WAV; readback pós-smoke manteve `ollama.loadedModels=[gemma-hermes:latest]`, sem áudio bruto.
 - Boot de produção `npm start` em porta isolada `3001` passou com Postgres, health `ok` e depois a instância auxiliar foi encerrada; Core principal permaneceu em `3000`.
-- A dashboard real via Tailscale exibiu settings, controles de retenção e histórico com provider/modelo/latências separadas.
+- A dashboard real exibiu as 12 áreas, controles de retenção, histórico com provider/modelo/latências separadas e o fluxo de configuração Groq-only.
+- O fluxo de voz foi exercitado no browser; capturas sem fala foram classificadas pela Groq como entrada inválida, enquanto uma sessão com áudio decodificável completou Groq → Gemma → Piper.
 
 ### Limitações honestas
 
-- Não existe `GROQ_API_KEY` configurada no backend desta máquina; nenhuma requisição de áudio foi enviada à Groq e não há comparação live de latência/qualidade/custo entre os dois modelos Groq.
-- A fixture usada no benchmark é voz sintetizada pelo Piper e não comprova entendimento de fala humana espontânea. O texto observado também mostrou a limitação atual do local (`David`/`Javiz`), portanto o default não foi promovido.
+- O benchmark comparou somente os dois modelos Groq porque o usuário solicitou retirar Faster-Whisper da dashboard e o runtime local não está instalado; o backend legado permanece apenas para compatibilidade.
+- A fixture usada no benchmark é voz sintetizada pelo Piper e não comprova entendimento de fala humana espontânea. Para uma decisão de qualidade, ainda é necessário um conjunto de frases PT-BR humanas autorizadas e redigidas.
 - O preview real não encontrou sessões elegíveis com mais de 30 dias; a exclusão real foi validada por testes e o store PostgreSQL por fixture, sem remover histórico do usuário.
 - O modelo local continua `medium` por segurança/qualidade; `small`/`base` são opções de menor custo, não uma promoção de precisão.
 
@@ -812,16 +814,25 @@ A documentação deve dizer explicitamente que `GROQ_API_KEY` existe apenas no a
 - [x] Conteúdo das conversas vinculadas é redigido sem apagar o trilho estrutural de auditoria.
 - [x] Auto-retention permanece desligada até opt-in explícito.
 - [x] Nenhum áudio bruto fica persistido.
-- [ ] Benchmark live compara `medium`, `whisper-large-v3-turbo` e `whisper-large-v3`; Groq está bloqueado até `GROQ_API_KEY` ser configurada no backend.
+- [x] Benchmark live compara `whisper-large-v3-turbo` e `whisper-large-v3` com a mesma fixture sintética; a comparação local foi retirada do escopo da dashboard por decisão explícita.
 - [x] `npm test` e `npm run build` passam com contagens reais registradas no plano.
 - [x] Core continua em loopback e dashboard somente via Tailscale Serve, sem Funnel.
 
-## Próximo passo bloqueado por credencial
+## Próxima fase recomendada
 
-Quando Davi configurar `GROQ_API_KEY` no ambiente seguro do backend, executar:
+Com a fase de STT/dashboard encerrada, o próximo vertical slice deve voltar ao
+plano de AI + DVR:
 
-```bash
-npm run benchmark:stt -- --audio <fixture.wav> --expected "<frase PT-BR redigida>"
-```
+1. calibrar o detector ONNX no enquadramento definitivo, ampliando amostras de
+   chuva, contraluz, IR, oclusões, pessoas próximas/distantes, animais,
+   veículos, plantas e sombras;
+2. exercitar operação contínua em `dry-run` com heartbeat/PID, confirmação
+   temporal e métricas de falso positivo antes de qualquer publicação;
+3. amadurecer a timeline/DVR e a indexação vinculada a evidências, mantendo
+   gravação independente do Gemma;
+4. só depois avaliar retenção/arquivamento em lote no Drive e qualquer
+   automação física, que continua bloqueada.
 
-Depois comparar latência p50/p95, WER e percepção de entendimento antes de alterar `route=local` para `groq`/`auto`. Até lá, manter `cloudEnabled=false`, `route=local`, `fallback=none` e a limpeza automática desligada.
+O benchmark futuro de qualidade deve usar várias frases PT-BR humanas,
+autorizadas e redigidas, sem reintroduzir Faster-Whisper na dashboard. A quota
+cloud e a confirmação de saída de áudio continuam obrigatórias.

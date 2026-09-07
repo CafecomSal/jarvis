@@ -137,6 +137,7 @@ const AudioRequestSchema = z.object({
     (value) => value.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(value),
     'audioBase64 must be valid base64',
   ),
+  durationMs: z.number().finite().min(0).max(120_000).optional(),
 });
 
 const WatchSessionsQuerySchema = z.object({
@@ -575,7 +576,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     const audio = Buffer.from(parsed.data.audioBase64, 'base64');
     if (audio.length === 0) return reply.code(400).send({ error: 'invalid_audio_request' });
     try {
-      const result = await audioPipeline.process(audio, parsed.data.mimeType, 'pc', 'pc');
+      const result = await audioPipeline.process(audio, parsed.data.mimeType, 'pc', 'pc', parsed.data.durationMs);
       return reply.send({
         session: result.session,
         conversation: result.conversation,
