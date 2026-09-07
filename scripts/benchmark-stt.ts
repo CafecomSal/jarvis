@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { GroqSttProvider } from '../src/audio/providers/groq-stt.js';
-import { FasterWhisperSttProvider } from '../src/audio/providers/faster-whisper-stt.js';
 import type { SttProvider } from '../src/audio/stt-provider.js';
 
 function arg(name: string): string | undefined {
@@ -67,12 +66,13 @@ async function runProvider(name: string, provider: SttProvider, audio: Buffer, m
 const audioPath = arg('--audio') ?? 'data/audio/tts/piper-smoke.wav';
 const expected = arg('--expected');
 const audio = await readFile(audioPath);
-const results = [await runProvider('faster-whisper', new FasterWhisperSttProvider({ model: process.env.JARVIS_STT_MODEL ?? 'medium' }), audio, 'audio/wav', expected)];
 const key = process.env.GROQ_API_KEY?.trim();
+const results = [] as Array<Record<string, unknown>>;
 if (key) {
   results.push(await runProvider('groq-turbo', new GroqSttProvider({ apiKey: key, model: 'whisper-large-v3-turbo', language: 'pt-BR' }), audio, 'audio/wav', expected));
   results.push(await runProvider('groq-large-v3', new GroqSttProvider({ apiKey: key, model: 'whisper-large-v3', language: 'pt-BR' }), audio, 'audio/wav', expected));
 } else {
-  results.push({ provider: 'groq', skipped: true, reason: 'GROQ_API_KEY não configurada no backend' });
+  results.push({ provider: 'groq-turbo', skipped: true, reason: 'GROQ_API_KEY não configurada no backend' });
+  results.push({ provider: 'groq-large-v3', skipped: true, reason: 'GROQ_API_KEY não configurada no backend' });
 }
 console.log(JSON.stringify({ audioPath, audioBytes: audio.length, expectedProvided: Boolean(expected), results }, undefined, 2));

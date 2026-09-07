@@ -15,6 +15,43 @@ export function parseAudioDurationSeconds(stdout: string): number | undefined {
   return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+/**
+ * ffprobe cannot always determine the duration of a WAV stream received on
+ * stdin because the input is not seekable. The RIFF header still contains
+ * enough information for PCM and other constant-byte-rate WAV files, so use
+ * it as a bounded fallback instead of treating a valid recording as an
+ * exhausted cloud quota.
+ */
+export function parseWavDurationSeconds(audio: Buffer): number | undefined {
+  if (audio.length < 12 || audio.toString('ascii', 0, 4) !== 'RIFF' || audio.toString('ascii', 8, 12) !== 'WAVE') {
+    return undefined;
+  }
+
+  let offset = 12;
+  let byteRate: number | undefined;
+  let dataBytes: number | undefined;
+  while (offset + 8 <= audio.length) {
+    const chunkId = audio.toString('ascii', offset, offset + 4);
+    const declaredSize = audio.readUInt32LE(offset + 4);
+    const payloadStart = offset + 8;
+    const availableSize = Math.max(0, Math.min(declaredSize, audio.length - payloadStart));
+
+    if (chunkId === 'fmt ' && availableSize >= 12) {
+      byteRate = audio.readUInt32LE(payloadStart + 8);
+    } else if (chunkId === 'data') {
+      dataBytes = availableSize;
+    }
+
+    const nextOffset = payloadStart + declaredSize + (declaredSize % 2);
+    if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset) break;
+    offset = nextOffset;
+  }
+
+  if (!byteRate || dataBytes === undefined) return undefined;
+  const seconds = dataBytes / byteRate;
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+}
+
 function formatForMimeType(mimeType: string): string | undefined {
   const base = mimeType.split(';', 1)[0].toLowerCase();
   if (base === 'audio/webm') return 'webm';
@@ -81,9 +118,10 @@ export class FfprobeAudioDurationProbe implements AudioDurationProbe {
       const stdout = await (this.runner
         ? this.runner(audio, mimeType)
         : spawnFfprobe(this.ffprobePath, audio, mimeType, this.timeoutMs));
-      return parseAudioDurationSeconds(stdout);
+      return parseAudioDurationSeconds(stdout)
+        ?? (formatForMimeType(mimeType) === 'wav' ? parseWavDurationSeconds(audio) : undefined);
     } catch {
-      return undefined;
+      return formatForMimeType(mimeType) === 'wav' ? parseWavDurationSeconds(audio) : undefined;
     }
   }
 }

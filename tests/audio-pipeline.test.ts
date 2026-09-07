@@ -7,15 +7,19 @@ import { AudioPipeline } from '../src/audio/audio-pipeline.js';
 
 describe('pipeline de áudio', () => {
   it('transcreve, consulta o Core, sintetiza e persiste somente metadata', async () => {
+    let receivedContext: { sessionId?: string; audioDurationSeconds?: number } | undefined;
     const stt: SttProvider = {
-      transcribe: async (): Promise<AudioTranscript> => ({
-        text: 'Tem alguém no portão?',
-        language: 'pt-BR',
-        confidence: 0.95,
-        provider: 'fixture-stt',
-        model: 'fixture',
-        latencyMs: 12,
-      }),
+      transcribe: async (_audio, _mimeType, context): Promise<AudioTranscript> => {
+        receivedContext = context;
+        return {
+          text: 'Tem alguém no portão?',
+          language: 'pt-BR',
+          confidence: 0.95,
+          provider: 'fixture-stt',
+          model: 'fixture',
+          latencyMs: 12,
+        };
+      },
     };
     const tts: TtsProvider = {
       synthesize: async () => ({
@@ -35,12 +39,13 @@ describe('pipeline de áudio', () => {
       now: () => new Date('2026-09-05T04:00:00.000Z'),
     });
 
-    const result = await pipeline.process(Buffer.from('audio'), 'audio/wav', 'pc', 'pc');
+    const result = await pipeline.process(Buffer.from('audio'), 'audio/wav', 'pc', 'pc', 1_250);
     const stored = await sessions.findById(result.session.id);
 
     expect(result.session).toMatchObject({ source: 'pc', status: 'completed', ttsTarget: 'pc' });
     expect(result.conversation.answer).toContain('Tem alguém no portão?');
     expect(result.audio.audio.toString()).toBe('wav');
+    expect(receivedContext).toMatchObject({ sessionId: result.session.id, audioDurationSeconds: 1.25 });
     expect(stored).toMatchObject({ transcript: { provider: 'fixture-stt', latencyMs: 12 }, pipelineLatencyMs: expect.any(Number), responseText: expect.stringContaining('resposta') });
     expect('rawAudio' in (stored ?? {})).toBe(false);
   });

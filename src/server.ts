@@ -131,7 +131,11 @@ const audioRuntime = audioEnabled ? new AudioRuntime({
   } : {}),
   canUseCloud: async (audio, mimeType, context) => {
     if (!audio || !mimeType) return false;
-    const seconds = await audioDurationProbe.probe(audio, mimeType);
+    const probedSeconds = await audioDurationProbe.probe(audio, mimeType);
+    const hintedSeconds = context?.audioDurationSeconds;
+    const seconds = probedSeconds === undefined
+      ? hintedSeconds
+      : hintedSeconds === undefined ? probedSeconds : Math.max(probedSeconds, hintedSeconds);
     if (seconds === undefined) return false;
     if (context?.sessionId) audioDurations.set(context.sessionId, seconds);
     return audioQuota.canUse({ audioSeconds: seconds, estimatedUsd: estimateGroqCostUsd(seconds, 'whisper-large-v3') });
@@ -139,9 +143,14 @@ const audioRuntime = audioEnabled ? new AudioRuntime({
   recordCloudUsage: async (context, transcript, audio, mimeType) => {
     const sessionId = context?.sessionId;
     if (!sessionId) return;
-    const measuredSeconds = transcript.durationMs === undefined
-      ? audioDurations.get(sessionId) ?? await audioDurationProbe.probe(audio, mimeType)
-      : transcript.durationMs / 1_000;
+    const probedSeconds = await audioDurationProbe.probe(audio, mimeType);
+    const knownDurations = [
+      audioDurations.get(sessionId),
+      context?.audioDurationSeconds,
+      probedSeconds,
+      transcript.durationMs === undefined ? undefined : transcript.durationMs / 1_000,
+    ].filter((value): value is number => value !== undefined && Number.isFinite(value) && value >= 0);
+    const measuredSeconds = knownDurations.length > 0 ? Math.max(...knownDurations) : undefined;
     if (measuredSeconds === undefined) return;
     await audioQuota.record({
       sessionId,

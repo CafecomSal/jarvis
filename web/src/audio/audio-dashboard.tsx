@@ -14,14 +14,18 @@ interface RuntimeSettingsPanelProps {
 function settingsDraft(data: RuntimeSettingsResponse) {
   return {
     audioEnabled: data.settings.audioEnabled,
-    route: data.settings.stt.route,
-    localModel: data.settings.stt.localModel,
+    // The dashboard intentionally exposes Groq as the only STT provider.
+    // Older persisted settings may still contain the former local route; the
+    // next save migrates them without exposing a broken provider choice.
+    route: 'groq' as const,
     groqModel: data.settings.stt.groqModel,
     language: data.settings.stt.language,
     prompt: data.settings.stt.prompt,
-    fallback: data.settings.stt.fallback,
+    fallback: 'none' as const,
     timeoutMs: data.settings.stt.timeoutMs,
-    cloudEnabled: data.settings.stt.cloudEnabled,
+    // Preserve an explicit Groq opt-out after the user saves it. Legacy local
+    // settings are migrated with the cloud gate ready for the requested route.
+    cloudEnabled: data.settings.stt.route === 'groq' ? data.settings.stt.cloudEnabled : true,
     maxRequestsPerDay: data.settings.quota.maxRequestsPerDay,
     maxAudioSecondsPerDay: data.settings.quota.maxAudioSecondsPerDay,
     maxEstimatedMonthlyUsd: data.settings.quota.maxEstimatedMonthlyUsd,
@@ -57,7 +61,7 @@ export function RuntimeSettingsPanel({ api }: RuntimeSettingsPanelProps) {
 
   async function save() {
     if (!draft || busy) return;
-    const requestsCloud = draft.cloudEnabled || draft.route !== 'local';
+    const requestsCloud = true;
     if (requestsCloud && !cloudConfirmation) {
       setMessage('Confirme explicitamente que o áudio poderá sair da máquina.');
       return;
@@ -69,7 +73,6 @@ export function RuntimeSettingsPanel({ api }: RuntimeSettingsPanelProps) {
         audioEnabled: draft.audioEnabled,
         stt: {
           route: draft.route,
-          localModel: draft.localModel,
           groqModel: draft.groqModel,
           language: draft.language,
           prompt: draft.prompt,
@@ -100,10 +103,10 @@ export function RuntimeSettingsPanel({ api }: RuntimeSettingsPanelProps) {
   }
 
   if (!data || !draft) return <div className="page-stack"><div className="loading"><span className="spinner" /> carregando settings…</div></div>;
-  const requestsCloud = draft.cloudEnabled || draft.route !== 'local';
+  const requestsCloud = true;
   const usage = data.settings.quota.usage;
-  const activeProvider = data.settings.stt.activeProvider ?? (draft.route === 'local' ? 'faster-whisper' : 'não aplicado');
-  const location = data.settings.stt.processingLocation ?? (draft.route === 'local' ? 'local' : 'desconhecido');
+  const activeProvider = data.settings.stt.activeProvider ?? 'groq (pendente de aplicação)';
+  const location = data.settings.stt.processingLocation ?? 'cloud';
 
   return (
     <div className="page-stack">
@@ -113,11 +116,10 @@ export function RuntimeSettingsPanel({ api }: RuntimeSettingsPanelProps) {
           <div className="card-heading"><div><div className="eyebrow">STT ROUTER</div><h3>Provider e fallback</h3></div><span className={`pill pill-${location === 'cloud' ? 'warn' : 'ok'}`}>{location}</span></div>
           <div className="settings-form">
             <label><span>Pipeline de áudio</span><input type="checkbox" checked={draft.audioEnabled} onChange={(event) => setField('audioEnabled', event.target.checked)} /><small>habilitar após reinício se necessário</small></label>
-            <label><span>Rota</span><select value={draft.route} onChange={(event) => setField('route', event.target.value as SettingsDraft['route'])}><option value="local">Local</option><option value="groq">Groq</option><option value="auto">Automático</option></select></label>
-            <label><span>Modelo local</span><select value={draft.localModel} onChange={(event) => setField('localModel', event.target.value)}><option value="medium">Faster-Whisper medium</option><option value="small">Faster-Whisper small</option><option value="base">Faster-Whisper base</option></select></label>
+            <label><span>Provider STT</span><input value="Groq Whisper" readOnly /><small>provider cloud único desta configuração</small></label>
             <label><span>Modelo Groq</span><select value={draft.groqModel} onChange={(event) => setField('groqModel', event.target.value)}><option value="whisper-large-v3-turbo">whisper-large-v3-turbo</option><option value="whisper-large-v3">whisper-large-v3</option></select></label>
             <label><span>Idioma</span><input value={draft.language} onChange={(event) => setField('language', event.target.value)} /></label>
-            <label><span>Fallback</span><select value={draft.fallback} onChange={(event) => setField('fallback', event.target.value as SettingsDraft['fallback'])}><option value="none">Sem fallback</option><option value="local">Fallback local</option></select></label>
+            <label><span>Fallback</span><input value="Sem fallback" readOnly /><small>nenhum áudio é redirecionado para outro provider</small></label>
             <label><span>Timeout (ms)</span><input type="number" min="100" max="120000" step="100" value={draft.timeoutMs} onChange={(event) => setField('timeoutMs', Number(event.target.value))} /></label>
             <label><span>Prompt contextual (opcional)</span><input value={draft.prompt} maxLength={1000} onChange={(event) => setField('prompt', event.target.value)} /></label>
           </div>

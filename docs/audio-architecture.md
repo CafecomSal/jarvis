@@ -2,9 +2,7 @@
 
 ```text
 PC push-to-talk / hotkey
-  -> SttRouter
-       -> Faster-Whisper (CPU, int8, worker residente, modelo local configurável)
-       -> Groq Whisper (cloud opt-in, uma organização/chave backend, quota local)
+  -> Groq Whisper (cloud opt-in, uma organização/chave backend, quota local)
   -> ConversationOrchestrator + Gemma
   -> Piper (CPU, pt_BR-jeff-medium)
   -> PC speaker
@@ -17,7 +15,7 @@ Alexa/Home Assistant
 ## Estado e gates
 
 - `JARVIS_AUDIO_ENABLED=true` habilita o pipeline no processo do Core.
-- A rota default é `local`; `groq` e `auto` só enviam áudio quando `JARVIS_CLOUD_STT_ENABLED=true`, a configuração efetiva autoriza cloud e `GROQ_API_KEY` existe no backend.
+- A dashboard grava a rota `groq` e não oferece Local/Automático nem modelos Faster-Whisper. O backend ainda aceita settings locais antigos somente para compatibilidade e migração; esses valores não são uma opção da UI.
 - `whisper-large-v3-turbo` é o candidato Groq de baixa latência; `whisper-large-v3` é a alternativa de precisão. A lista é allowlisted.
 - O timeout, fallback, idioma, prompt contextual e modelos podem vir do runtime settings. Segredos, URL de banco, RTSP, Tailscale, GPU e ações físicas não são editáveis pela dashboard.
 - A quota local controla requests/dia, segundos/dia e custo estimado; os limites reais da organização Groq são observados separadamente pelos headers da API. Não há rotação de chaves/contas.
@@ -29,7 +27,7 @@ Alexa/Home Assistant
 
 `GroqSttProvider` usa o endpoint oficial de transcrição compatível com multipart. O Core envia o blob bounded recebido do browser, força temperatura zero, idioma português e `verbose_json` quando a rota cloud está ativa. O resultado registra provider, modelo, localização (`local`/`cloud`), latência e duração quando disponíveis; confiança não é inventada quando o provider não fornece metadata.
 
-`SttRouter` aceita `local`, `groq` ou `auto`. Fallback local é permitido somente quando configurado e para timeout, indisponibilidade, quota ou erro upstream. Credencial inválida, formato inválido e resposta inválida falham de forma explícita. Não há retry cego de uma requisição ambígua.
+`SttRouter` continua aceitando `local`, `groq` ou `auto` para compatibilidade interna. A configuração produzida pela dashboard usa `groq` com fallback `none`. Credencial inválida, formato inválido e resposta inválida falham de forma explícita. Não há retry cego de uma requisição ambígua.
 
 ## Credenciais e privacidade
 

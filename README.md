@@ -16,7 +16,7 @@ Core residencial modular em Node.js + TypeScript + ESM.
 - Retenção de snapshots: 7 dias, sem apagar antes de backup verificado. Para o DVR, a política nova é contínuo econômico por 30 dias, eventos por 90 dias e itens `protected` mantidos manualmente; staging local só pode ser removido após readback `verified`.
 - O detector ONNX é um processo separado do Core/VLM e só é iniciado explicitamente com `npm run detector`; por padrão usa `yolo11n.onnx` em CPU. `npm run detector:objects -- --once` reconhece classes COCO selecionadas e `npm run ocr -- --once` roda RapidOCR sob demanda.
 - O DVR grava segmentos locais H.264/AAC via FFmpeg, usa o perfil `continuous-economic` no modo contínuo, cataloga metadata/tier/checksum no PostgreSQL e expõe histórico/clip/timeline por API read-only. A fila Drive faz upload/readback idempotente; retenção remota é opt-in separado.
-- O caminho de áudio PC é manual/opt-in: push-to-talk web ou `npm run audio:hotkey`, router local/Groq → Gemma → Piper CPU. O local continua default (`Faster-Whisper medium` em worker CPU); Groq só funciona com cloud habilitado, uma credencial backend configurada, quota local e confirmação. Sessões persistem transcript/metadata, nunca áudio bruto. Alexa usa adapter Home Assistant para `notify.echo_dot_speak`/`notify.echo_dot_announce`; nenhuma skill AWS própria é necessária.
+- O caminho de áudio PC é manual/opt-in: push-to-talk web ou `npm run audio:hotkey`, Groq Whisper → Gemma → Piper CPU. A dashboard expõe somente os modelos Groq allowlisted; settings locais antigos continuam aceitos pelo backend apenas para migração/compatibilidade e não aparecem como opção. Groq só funciona com cloud habilitado, uma credencial backend configurada, quota local e confirmação. Sessões persistem transcript/metadata, nunca áudio bruto. Alexa usa adapter Home Assistant para `notify.echo_dot_speak`/`notify.echo_dot_announce`; nenhuma skill AWS própria é necessária.
 - Tags de objetos/OCR preservam evidência, confiança, origem e status; watch sessions, importância e propostas de ação ficam separadas da política. Nenhuma tool de escrita, confirmação ou ação física está habilitada.
 
 ## Executar
@@ -333,10 +333,10 @@ O diretório opcional `JARVIS_DRIVE_PARENT_FOLDER_ID` escolhe uma pasta existent
 - `JARVIS_RECORDING_VIDEO_PRESET` — preset H.264; padrão `ultrafast`.
 - `JARVIS_RECORDING_RETRY_DELAY_MS` — atraso entre falhas em `--continuous`; padrão `5000`.
 - `JARVIS_AUDIO_ENABLED` — habilita o pipeline PC; `false` por padrão.
-- `JARVIS_STT_MODEL` — modelo Faster-Whisper CPU; padrão `medium` para melhor reconhecimento em português; `small`/`base` permanecem como alternativas de menor custo.
-- `JARVIS_STT_ROUTE` — rota `local`, `groq` ou `auto`; padrão `local`.
+- `JARVIS_STT_MODEL` — configuração local legada, mantida somente para compatibilidade de settings antigos; não é exposta pela dashboard.
+- `JARVIS_STT_ROUTE` — rota legada `local`, `groq` ou `auto`; a dashboard grava `groq`.
 - `JARVIS_STT_LANGUAGE` — idioma do STT; padrão `pt-BR`.
-- `JARVIS_STT_FALLBACK` — fallback permitido; `none` ou `local`, padrão `none`.
+- `JARVIS_STT_FALLBACK` — fallback interno legado; `none` ou `local`, padrão `none`; a dashboard grava `none`.
 - `JARVIS_STT_TIMEOUT_MS` — timeout do provider cloud; padrão `12000`.
 - `JARVIS_GROQ_STT_MODEL` — modelo Groq allowlisted; padrão `whisper-large-v3-turbo`.
 - `GROQ_API_KEY` — segredo somente do backend; nunca é retornado pela API/dashboard e não deve ser documentado com valor.
@@ -347,7 +347,7 @@ O diretório opcional `JARVIS_DRIVE_PARENT_FOLDER_ID` escolhe uma pasta existent
 - `JARVIS_PIPER_MODEL` — voz Piper ONNX; padrão `models/tts/piper/pt_BR-jeff-medium.onnx`.
 - `PIPER_COMMAND` — executável Piper opcional; padrão `piper` no PATH. O Core não força `python -m piper`.
 - `JARVIS_CLOUD_TTS_ENABLED`/`JARVIS_CLOUD_STT_ENABLED` — gates independentes para fallback cloud; desligados por padrão.
-- `npm run benchmark:stt -- --audio <fixture.wav>` — compara Faster-Whisper local e, se houver chave backend, os modelos Groq allowlisted; veja `docs/stt-benchmark-template.md`.
+- `npm run benchmark:stt -- --audio <fixture.wav>` — compara os dois modelos Groq allowlisted; veja `docs/stt-benchmark-template.md`.
 - `JARVIS_VOICE_HOTKEY` — atalho do helper Windows; padrão `ctrl+alt+j`.
 - `JARVIS_TAILSCALE_SERVE_ENABLED` — somente indicador de health; o proxy é configurado com `tailscale serve`, nunca `funnel`.
 - `JARVIS_RECORDING_BACKUP_ENABLED` — habilita a fila de arquivamento DVR no Core somente com valor `true`; padrão desabilitado.
