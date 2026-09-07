@@ -2,7 +2,7 @@
 
 > Documento de transferência operacional e técnica. Leia este arquivo inteiro antes de editar o projeto.
 >
-> Gerado em: 2026-09-06T21:54:00-03:00  
+> Gerado em: 2026-09-06T23:50:00-03:00
 > Workspace: `C:\Users\davi\jarvis`  
 > Plataforma: Windows 11 + Git Bash/MSYS  
 > Status do documento: baseado no código atual, nos testes executados e nos probes reais descritos abaixo.
@@ -10,7 +10,7 @@
 ---
 
 > Atualização da execução durável em 2026-09-06: o supervisor Windows foi implementado, exercitado e endurecido contra PID reutilizado, corrida de parada, processos externos e falhas de readiness. A tarefa Jarvis Core foi instalada no Task Scheduler e lida de volta com ação, usuário, trigger, diretório e políticas correspondentes. O último smoke encerrou somente Core/Ollama próprios; PostgreSQL externo foi preservado. O estado final desta sessão é deliberadamente parado. Foi criado o backup local CODEX_HANDOFF.md.bak-2026-09-06-durable-ops antes desta atualização.
-> Atualização final desta execução: tentativas limitadas de recuperar o Docker Desktop não produziram engine responsivo; o serviço Windows também não pôde ser aberto pelo ambiente atual. Nenhum volume foi alterado e o estado do Jarvis ficou limpo/parado.
+> Atualização final desta execução: após o reinício autorizado do Docker, o engine 29.0.1 respondeu, o PostgreSQL foi iniciado apenas para a fixture sintética e depois parado. Nenhum volume ou dado real foi removido; Core, Ollama e portas do Jarvis ficaram parados.
 
 ## 0. Instrução para o próximo agente
 
@@ -25,7 +25,7 @@ Você é o agente que assumirá o projeto Jarvis. Antes de fazer qualquer mudan�
 7. Use TDD para alterações: teste RED, implementação mínima, GREEN, suíte completa.
 8. Preserve a regra de que no máximo um modelo neural fica na GPU.
 9. Após qualquer escrita externa, faça readback do estado afetado.
-10. Este diretório **não é um repositório Git** no momento. `git status`, `git log` e rollback por commit não estão disponíveis. Faça cópia/backup de arquivos antes de alterações arriscadas.
+10. O diretório agora é um repositório Git em `main`, com `origin/main` no GitHub. Preserve o backup local antes de alterações arriscadas e nunca faça `force push` sem autorização explícita.
 
 O objetivo desta transferência é permitir que o Codex continue o trabalho sem precisar reconstruir decisões, arquitetura, pendências ou comandos a partir do histórico da conversa.
 
@@ -77,9 +77,9 @@ A última auditoria de máquina encontrou:
 | Componente | Estado observado | Detalhe |
 |---|---|---|
 | Projeto | presente | `C:\Users\davi\jarvis` |
-| Git | ausente | `git rev-parse --show-toplevel` retornou `NOT_A_GIT_REPOSITORY` |
+| Git | presente | branch `main`, `origin/main` conferido no commit `712725904a14be6a354a074d16d09ab8867d0b44`; working tree estava limpo antes desta rodada |
 | PostgreSQL | parado ao finalizar esta sessão | último smoke reutilizou o container `jarvis-postgres` healthy em `127.0.0.1:5434`; nenhum volume ou dado foi removido |
-| Docker Desktop/engine | parado | pipes `docker_engine` e `dockerDesktopLinuxEngine` ausentes no estado final; o binário Docker continua presente |
+| Docker Desktop/engine | responsivo, sem containers Jarvis em execução | `docker ps` vazio; pipes `docker_engine` e `dockerDesktopLinuxEngine` presentes; nenhum volume foi alterado |
 | Core | parado no estado final | porta `127.0.0.1:3000` fechada; o supervisor inicia o Core compilado quando executado |
 | Ollama | parado no estado final | porta `127.0.0.1:11434` fechada; o supervisor inicia `ollama serve` quando necessário |
 | Task Scheduler | instalado e conferido | tarefa `Jarvis Core`, trigger `AtLogOn` com atraso de 30 s, usuário atual, `InteractiveToken`/menor privilégio, instância única e restart limitado |
@@ -772,7 +772,7 @@ O serviço revalida status e `startedAt` na execução para evitar corrida com s
 
 ### Estado real
 
-Preview real anterior a 2026-08-07 retornou `count=0`. Nenhuma sessão real do usuário foi apagada. A exclusão foi coberta em memória e por testes/fixtures PostgreSQL.
+Preview real anterior a 2026-08-07 retornou `count=0`. Nenhuma sessão real do usuário foi apagada. A exclusão foi coberta em memória e pela fixture PostgreSQL sintética, que passou com o banco saudável.
 
 ---
 
@@ -1192,8 +1192,8 @@ node --env-file=.env .\node_modules\vitest\vitest.mjs run
 Resultado:
 
 ```text
-112 arquivos passaram
-282 testes passaram
+113 arquivos passaram
+283 testes passaram
 ```
 
 Esse é o resultado completo válido porque carrega o `.env` explicitamente. O `npm test` sem ambiente não é a métrica final desta fase: os testes que dependem de PostgreSQL não podem ser tratados como prova de integração.
@@ -1239,7 +1239,7 @@ Resultado: `2/2` passaram. Fixtures foram limpos:
 - `tests/windows-supervisor-contract.test.ts` — Validate/Status redigidos, defaults seguros e contrato do supervisor.
 - `tests/postgres-audio-session-retention.test.ts` — fixture sintético de preview, confirmação, corrida, redaction/tombstone e preservação de recording/Drive.
 
-O teste focado do supervisor passou em `3/3`. O teste PostgreSQL novo foi compilado, mas não executado nesta última rodada porque o Docker Desktop não voltou a fornecer um engine responsivo; ele permanece `skipIf(!DATABASE_URL)` quando não há banco.
+O teste focado do supervisor passou em `3/3`. A fixture PostgreSQL passou em `1/1` após o reinício do Docker. Durante a validação, ela revelou e permitiu corrigir um cast ausente em `src/audit/postgres-audit-store.ts`; os timestamps da fixture também foram tornados determinísticos para respeitar a ordenação contratada.
 
 ### Benchmarks reais
 
@@ -1313,7 +1313,7 @@ Não declarar que a qualidade do STT foi resolvida antes dessa rodada.
 
 ### P1 — validação de retenção
 
-O teste `tests/postgres-audio-session-retention.test.ts` foi criado com fixture sintético e cobre o readback completo:
+O teste `tests/postgres-audio-session-retention.test.ts` foi criado com fixture sintético e passou com o PostgreSQL saudável, cobrindo o readback completo:
 
 - preview seleciona somente o fixture;
 - confirmação exige quantidade exata;
@@ -1323,15 +1323,13 @@ O teste `tests/postgres-audio-session-retention.test.ts` foi criado com fixture 
 - sessão ativa concorrente não é removida;
 - gravações/Drive não são afetados.
 
-Não apagar as 20/29 sessões reais recentes apenas para produzir uma evidência.
-
-A execução PostgreSQL desse teste continua pendente: tentativas limitadas de ativação do Docker Desktop não forneceram um engine responsivo e o serviço Windows não pôde ser aberto pelo ambiente atual. O teste foi compilado, mas não deve ser reportado como passado; nenhuma sessão real foi removida.
+Não apagar as 20/29 sessões reais recentes apenas para produzir uma evidência. A fixture removeu somente os IDs sintéticos e fez cleanup ao final; nenhuma sessão real foi removida.
 
 ### P1 — operação durável
 
 Implementado em `ops/windows/jarvis-supervisor.ps1` e documentado em `docs/windows-operation.md`. A tarefa `Jarvis Core` foi instalada no contexto do usuário escolhido e passou por readback de propriedades. O supervisor mantém a ordem PostgreSQL → Ollama → Core, readiness limitado, backoff 5/15/30 s, instância única, logs sem segredos, identidade de PID e parada coordenada.
 
-A tarefa inicia somente o Core supervisor no login; não inicia detector, hotkey, gravação contínua, Drive ou ações físicas. O Docker Desktop continua sendo pré-requisito externo e o estado final desta sessão ficou parado.
+A tarefa inicia somente o Core supervisor no login; não inicia detector, hotkey, gravação contínua, Drive ou ações físicas. O Docker Desktop continua sendo pré-requisito externo; após a validação, o container PostgreSQL foi parado e o estado final do Jarvis ficou parado.
 
 ### P1 separado — snapshot retention
 
@@ -1450,7 +1448,7 @@ A fase estará realmente encerrada quando:
 - [ ] rota default tiver decisão baseada em dados;
 - [ ] fallback tiver sido validado com erro/429 real ou mock equivalente;
 - [ ] settings tiverem save/readback real pela dashboard;
-- [ ] fixture PostgreSQL de retenção tiver redaction/tombstone/readback;
+- [x] fixture PostgreSQL de retenção tiver redaction/tombstone/readback;
 - [x] Core/Ollama tiverem estratégia de execução durável implementada e tarefa lida de volta;
 - [x] alerta de snapshot retention tiver investigação local separada e não destrutiva;
 - [ ] dependências Python/Drive tiverem validação controlada autorizada;
@@ -1476,4 +1474,4 @@ Tailscale=tailnet-only
 
 Se quiser colar um briefing curto depois de o Codex ler o arquivo:
 
-> Leia `C:/Users/davi/jarvis/CODEX_HANDOFF.md` completamente. Faça uma inspeção read-only primeiro. O Jarvis é local-first, sem Git detectável, com Postgres/Ollama/Core separados. Não exponha segredos, não habilite Groq/autostart/ações físicas/retention destrutiva sem autorização. Preserve Piper, a exclusividade de GPU, Tailscale-only, redaction+tombstone e o fluxo TDD. Depois me mostre o estado atual e proponha somente o próximo passo bloqueado por evidência.
+> Leia `C:/Users/davi/jarvis/CODEX_HANDOFF.md` completamente. Faça uma inspeção read-only primeiro. O Jarvis é local-first, está em `main` com `origin/main`, e mantém Postgres/Ollama/Core separados. Não exponha segredos, não habilite Groq/autostart/ações físicas/retention destrutiva sem autorização. Preserve Piper, a exclusividade de GPU, Tailscale-only, redaction+tombstone e o fluxo TDD. Depois me mostre o estado atual e proponha somente o próximo passo bloqueado por evidência.

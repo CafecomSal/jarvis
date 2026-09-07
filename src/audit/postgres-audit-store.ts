@@ -121,7 +121,7 @@ export class PostgresAuditStore implements AuditStore {
   async redactForConversation(conversationId: string, reason: string): Promise<number> {
     const result = await this.pool.query(
       `UPDATE audit_log
-          SET data = jsonb_build_object('redacted', true, 'reason', $2)
+          SET data = jsonb_build_object('redacted', true, 'reason', $2::text)
         WHERE conversation_id = $1
           AND COALESCE(data->>'redacted', 'false') <> 'true'`,
       [conversationId, reason],
