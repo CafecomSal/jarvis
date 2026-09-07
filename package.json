@@ -1,0 +1,51 @@
+{
+  "name": "jarvis-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:core && npm run build:web",
+    "build:core": "tsc -p tsconfig.json",
+    "build:web": "vite build --config vite.config.ts",
+    "dev": "node --env-file=.env --import tsx/esm src/server.ts",
+    "dev:web": "vite --config vite.config.ts",
+    "audio:hotkey": "python scripts/pc_voice_hotkey.py",
+    "dev:memory": "tsx src/server.ts",
+    "detector": "node --env-file=.env --import tsx/esm src/vision/run-person-detector.ts",
+    "detector:objects": "node --env-file=.env --import tsx/esm src/vision/run-object-detector.ts",
+    "ocr": "node --env-file=.env --import tsx/esm src/vision/run-ocr.ts",
+    "record": "node --env-file=.env --import tsx/esm src/recordings/run-recording.ts",
+    "record:archive": "node --env-file=.env --import tsx/esm src/recordings/run-recording-archive.ts",
+    "record:retention": "node --env-file=.env --import tsx/esm src/recordings/run-recording-retention.ts",
+    "index:recording": "node --env-file=.env --import tsx/esm src/recordings/run-index-recording.ts",
+    "detector:supervised": "node --env-file=.env --import tsx/esm src/vision/run-detector-supervisor.ts",
+    "detector:status": "node --env-file=.env --import tsx/esm src/vision/run-detector-status.ts",
+    "start": "node --env-file=.env dist/src/server.js",
+    "test": "vitest run",
+    "benchmark:stt": "node --env-file=.env --import tsx/esm scripts/benchmark-stt.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.2.0",
+    "fastify": "^5.6.0",
+    "mpegts.js": "^1.8.2",
+    "onnxruntime-node": "^1.29.0",
+    "pg": "^8.23.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.0"
+  }
+}

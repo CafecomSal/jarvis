@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: jarvis-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jarvis}
+      POSTGRES_USER: ${POSTGRES_USER:-jarvis}
+      POSTGRES_PASSWORD: ${JARVIS_POSTGRES_PASSWORD:-jarvis_dev_local_only}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - jarvis-postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  jarvis-postgres-data:

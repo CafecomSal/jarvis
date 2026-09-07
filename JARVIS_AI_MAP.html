@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jarvis Core — Mapa de IA</title>
+  <style>
+    :root { color-scheme: dark; --bg:#020617; --panel:#0f172a; --line:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --cyan:#22d3ee; --green:#34d399; --amber:#fbbf24; --violet:#a78bfa; --orange:#fb923c; --rose:#fb7185; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,Segoe UI,Arial,sans-serif; }
+    .wrap { max-width:1540px; margin:0 auto; padding:34px 28px 44px; }
+    header { display:flex; align-items:flex-start; gap:16px; margin-bottom:24px; }
+    .pulse { width:12px; height:12px; margin-top:8px; border-radius:50%; background:var(--green); box-shadow:0 0 0 0 rgba(52,211,153,.7); animation:pulse 2s infinite; }
+    @keyframes pulse { 70% { box-shadow:0 0 0 10px rgba(52,211,153,0); } 100% { box-shadow:0 0 0 0 rgba(52,211,153,0); } }
+    h1 { margin:0; font-size:28px; letter-spacing:-.03em; }
+    .subtitle { margin:7px 0 0; color:var(--muted); font-size:14px; }
+    .diagram-card { border:1px solid #1e293b; border-radius:14px; background:#07101f; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,.28); }
+    svg { display:block; min-width:1120px; width:100%; height:auto; }
+    .boundary { fill:rgba(15,23,42,.28); stroke-width:1.5; stroke-dasharray:8 5; }
+    .boundary-label { font-size:12px; font-weight:700; letter-spacing:.12em; }
+    .box-bg { fill:#0f172a; stroke-width:1.5; }
+    .box-title { fill:#f8fafc; font-size:14px; font-weight:700; }
+    .box-sub { fill:#cbd5e1; font-size:10px; }
+    .box-tiny { fill:#94a3b8; font-size:9px; }
+    .tag { font-size:9px; font-weight:700; letter-spacing:.1em; }
+    .cyan { stroke:var(--cyan); fill:rgba(8,51,68,.55); }
+    .green { stroke:var(--green); fill:rgba(6,78,59,.55); }
+    .amber { stroke:var(--amber); fill:rgba(120,53,15,.42); }
+    .violet { stroke:var(--violet); fill:rgba(76,29,149,.42); }
+    .orange { stroke:var(--orange); fill:rgba(124,45,18,.42); }
+    .rose { stroke:var(--rose); fill:rgba(136,19,55,.38); }
+    .slate { stroke:#64748b; fill:rgba(30,41,59,.62); }
+    .arrow { fill:none; stroke:#64748b; stroke-width:2; marker-end:url(#arrow); }
+    .arrow-ai { fill:none; stroke:var(--cyan); stroke-width:2.2; marker-end:url(#arrowCyan); }
+    .arrow-model { fill:none; stroke:var(--amber); stroke-width:2.2; marker-end:url(#arrowAmber); }
+    .arrow-event { fill:none; stroke:var(--orange); stroke-width:2.2; marker-end:url(#arrowOrange); }
+    .arrow-dashed { fill:none; stroke:#94a3b8; stroke-width:1.5; stroke-dasharray:6 5; marker-end:url(#arrow); }
+    .flow-label { fill:#94a3b8; font-size:9px; }
+    .legend text { fill:#cbd5e1; font-size:10px; }
+    .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:18px; }
+    .card { border:1px solid var(--line); border-radius:12px; background:rgba(15,23,42,.7); padding:18px 20px; min-height:150px; }
+    .card-head { display:flex; align-items:center; gap:9px; margin-bottom:12px; }
+    .dot { width:9px; height:9px; border-radius:50%; }
+    .dot.c { background:var(--cyan); }.dot.a { background:var(--amber); }.dot.v { background:var(--violet); }
+    h2 { font-size:14px; margin:0; }.card ul { margin:0; padding-left:18px; color:#cbd5e1; font-size:12px; line-height:1.65; }
+    .matrix { margin-top:14px; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:rgba(15,23,42,.6); }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th,td { padding:11px 13px; text-align:left; border-bottom:1px solid #1e293b; vertical-align:top; }
+    th { color:#94a3b8; font-size:10px; letter-spacing:.09em; text-transform:uppercase; background:#0b1323; }
+    tr:last-child td { border-bottom:0; }
+    .active { color:var(--green); }.planned { color:var(--amber); }.none { color:var(--muted); }
+    footer { color:#64748b; font-size:10px; margin-top:17px; }
+    @media (max-width:900px) { .wrap { padding:22px 14px 32px; } .cards { grid-template-columns:1fr; } h1 { font-size:23px; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div class="pulse" aria-hidden="true"></div>
+      <div><h1>Jarvis Core — mapa de IA</h1><p class="subtitle">O que usa IA hoje, o que é controle determinístico e o que está planejado ou adiado</p></div>
+    </header>
+
+    <section class="diagram-card" aria-label="Diagrama da arquitetura de IA do Jarvis Core">
+      <svg viewBox="0 0 1480 1180" role="img" aria-labelledby="title desc">
+        <title id="title">Mapa de IA atual e planejada do Jarvis Core</title>
+        <desc id="desc">Linhas de IA do Jarvis Core: Gemma local para conversa e visão sob demanda, YOLO11n e RapidOCR independentes, áudio local CPU opt-in. O Core ao redor é determinístico.</desc>
+        <defs>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width=".55"/></pattern>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#64748b"/></marker>
+          <marker id="arrowCyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#22d3ee"/></marker>
+          <marker id="arrowAmber" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#fbbf24"/></marker>
+          <marker id="arrowOrange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#fb923c"/></marker>
+        </defs>
+        <rect width="1480" height="1180" fill="url(#grid)"/>
+
+        <!-- Flows are intentionally drawn before boxes. -->
+        <path class="arrow-ai" d="M245 146H300"/><path class="arrow-ai" d="M545 146H590"/><path class="arrow-model" d="M830 146H880"/><path class="arrow-ai" d="M1135 146H1190"/>
+        <path class="arrow-dashed" d="M710 238V300"/><path class="arrow-dashed" d="M590 342H500V238"/>
+        <path class="arrow-dashed" d="M710 394V475H150V535"/>
+        <path class="arrow-event" d="M250 585H300"/><path class="arrow-event" d="M500 585H545"/><path class="arrow-model" d="M780 585H825"/><path class="arrow-event" d="M1035 585H1080"/><path class="arrow-event" d="M1260 635V700"/><path class="arrow-model" d="M150 635V700"/>
+        <path class="arrow-dashed" d="M930 660V735H745"/><path class="arrow-dashed" d="M1080 760H930"/>
+        <path class="arrow-dashed" d="M1260 700V880H1160V920"/>
+
+        <!-- Active conversational AI boundary -->
+        <rect class="boundary cyan" x="28" y="28" width="1424" height="410" rx="14" fill="none"/>
+        <text class="boundary-label" x="50" y="57" fill="#22d3ee">IA ATIVA · CONVERSA + VLM SOB DEMANDA</text>
+        <text class="box-tiny" x="50" y="76">local • tool calling • imagem somente quando get_camera_snapshot é escolhido</text>
+
+        <rect class="box-bg cyan" x="50" y="105" width="195" height="83" rx="7"/><text class="tag" x="67" y="126" fill="#22d3ee">ENTRADA</text><text class="box-title" x="67" y="149">Usuário / HTTP</text><text class="box-sub" x="67" y="168">POST /conversation</text>
+        <rect class="box-bg green" x="300" y="105" width="245" height="83" rx="7"/><text class="tag" x="317" y="126" fill="#34d399">ORQUESTRAÇÃO</text><text class="box-title" x="317" y="149">ConversationOrchestrator</text><text class="box-sub" x="317" y="168">prompt • até 3 rodadas • auditoria</text>
+        <rect class="box-bg cyan" x="590" y="105" width="240" height="83" rx="7"/><text class="tag" x="607" y="126" fill="#22d3ee">GATEWAY</text><text class="box-title" x="607" y="149">OllamaGateway</text><text class="box-sub" x="607" y="168">/api/chat • ctx 8192 • temp 0.2</text>
+        <rect class="box-bg amber" x="880" y="85" width="255" height="123" rx="7"/><text class="tag" x="898" y="108" fill="#fbbf24">MODELO LOCAL</text><text class="box-title" x="898" y="134">gemma-hermes:latest</text><text class="box-sub" x="898" y="154">LLM + VLM</text><text class="box-tiny" x="898" y="174">texto • tool calls • images</text><text class="box-tiny" x="898" y="190">Ollama / host Windows</text>
+        <rect class="box-bg violet" x="1190" y="105" width="240" height="83" rx="7"/><text class="tag" x="1207" y="126" fill="#a78bfa">SAÍDA CONTROLADA</text><text class="box-title" x="1207" y="149">GroundingGuard</text><text class="box-sub" x="1207" y="168">evidência ao vivo → resposta</text>
+
+        <rect class="box-bg slate" x="485" y="300" width="450" height="94" rx="7"/><text class="tag" x="503" y="322" fill="#94a3b8">TOOLS READ-ONLY</text><text class="box-sub" x="503" y="345">get_home_state • get_house_knowledge • search_events</text><text class="box-sub" x="503" y="364">find_object • get_camera_snapshot</text><text class="box-tiny" x="503" y="382">ToolRegistry + PolicyEngine validam e executam</text>
+        <text class="flow-label" x="738" y="276">tool call</text><text class="flow-label" x="520" y="286">resultado</text><text class="flow-label" x="735" y="465">snapshot sob demanda</text>
+
+        <!-- Active perception AI boundary -->
+        <rect class="boundary green" x="28" y="465" width="1424" height="350" rx="14" fill="none"/>
+        <text class="boundary-label" x="50" y="494" fill="#34d399">IA ATIVA · PERCEPÇÃO INDEPENDENTE DO GEMMA</text>
+        <text class="box-tiny" x="50" y="513">detector ONNX separado • CPU • pessoas/objetos • eventos estruturados • sem identidade</text>
+
+        <rect class="box-bg slate" x="50" y="535" width="200" height="100" rx="7"/><text class="tag" x="67" y="558" fill="#94a3b8">SENSOR</text><text class="box-title" x="67" y="581">Câmera `front`</text><text class="box-sub" x="67" y="601">RTSP • UDP • mosaico</text><text class="box-tiny" x="67" y="619">JPEG via FFmpeg</text>
+        <rect class="box-bg green" x="300" y="535" width="200" height="100" rx="7"/><text class="tag" x="317" y="558" fill="#34d399">PRÉ-PROCESSO</text><text class="box-title" x="317" y="581">FFmpeg</text><text class="box-sub" x="317" y="601">decode • letterbox 640²</text><text class="box-tiny" x="317" y="619">sem Torch/OpenCV</text>
+        <rect class="box-bg cyan" x="545" y="535" width="235" height="100" rx="7"/><text class="tag" x="562" y="558" fill="#22d3ee">RUNTIME</text><text class="box-title" x="562" y="581">ONNX Runtime</text><text class="box-sub" x="562" y="601">onnxruntime-node</text><text class="box-tiny" x="562" y="619">CPUExecutionProvider</text>
+        <rect class="box-bg amber" x="825" y="535" width="210" height="100" rx="7"/><text class="tag" x="842" y="558" fill="#fbbf24">MODELO</text><text class="box-title" x="842" y="581">YOLO11n</text><text class="box-sub" x="842" y="601">yolo11n.onnx</text><text class="box-tiny" x="842" y="619">pessoa/car/moto • 0.35 • NMS 0.45</text>
+        <rect class="box-bg orange" x="1080" y="535" width="180" height="100" rx="7"/><text class="tag" x="1097" y="558" fill="#fb923c">CONFIRMAÇÃO</text><text class="box-title" x="1097" y="581">2 frames / 5 s</text><text class="box-sub" x="1097" y="601">dedupe por presença</text><text class="box-tiny" x="1097" y="619">scheduler sem overlap</text>
+        <rect class="box-bg amber" x="50" y="680" width="200" height="80" rx="7"/><text class="tag" x="67" y="702" fill="#fbbf24">OCR SOB DEMANDA</text><text class="box-title" x="67" y="725">RapidOCR / ONNX</text><text class="box-sub" x="67" y="744">texto + caixas + confiança</text>
+        <rect class="box-bg orange" x="1080" y="680" width="180" height="80" rx="7"/><text class="tag" x="1097" y="702" fill="#fb923c">EVENTOS</text><text class="box-title" x="1097" y="725">POST /events</text><text class="box-sub" x="1097" y="744">publish opt-in</text>
+        <rect class="box-bg violet" x="700" y="700" width="230" height="80" rx="7"/><text class="tag" x="717" y="722" fill="#a78bfa">OPERACIONAL</text><text class="box-title" x="717" y="745">Supervisor + status/PID</text><text class="box-sub" x="717" y="764">dry-run por padrão</text>
+        <rect class="box-bg violet" x="500" y="700" width="175" height="80" rx="7"/><text class="tag" x="517" y="722" fill="#a78bfa">CORE</text><text class="box-title" x="517" y="745">Postgres</text><text class="box-sub" x="517" y="764">World State + audit</text>
+        <text class="flow-label" x="952" y="675">evento confirmado</text>
+
+        <!-- Deterministic control boundary -->
+        <rect class="boundary violet" x="28" y="840" width="1424" height="92" rx="14" fill="none"/>
+        <text class="boundary-label" x="50" y="870" fill="#a78bfa">CORE DETERMINÍSTICO · NÃO É IA</text>
+        <text class="box-tiny" x="50" y="891">políticas, evidência, memória, estado, auditoria e transporte ficam fora do modelo</text>
+        <rect class="box-bg violet" x="640" y="855" width="150" height="48" rx="6"/><text class="box-title" x="657" y="884">PolicyEngine</text>
+        <rect class="box-bg violet" x="820" y="855" width="180" height="48" rx="6"/><text class="box-title" x="837" y="884">World State / Memory</text>
+        <rect class="box-bg violet" x="1030" y="855" width="160" height="48" rx="6"/><text class="box-title" x="1047" y="884">Audit / Events</text>
+
+        <!-- Planned and experimental boundary -->
+        <rect class="boundary amber" x="28" y="960" width="1424" height="160" rx="14" fill="none"/>
+        <text class="boundary-label" x="50" y="990" fill="#fbbf24">EXPERIMENTAL / PLANEJADA · FORA DO RUNTIME ATUAL</text>
+        <rect class="box-bg amber" x="50" y="1010" width="245" height="78" rx="7"/><text class="box-title" x="67" y="1035">Frigate + YOLOv9 CUDA</text><text class="box-sub" x="67" y="1056">spike • sidecar NVR opcional</text><text class="box-tiny" x="67" y="1074">tracking/gravação justificam</text>
+        <rect class="box-bg amber" x="320" y="1010" width="245" height="78" rx="7"/><text class="box-title" x="337" y="1035">Embeddings / pgvector</text><text class="box-sub" x="337" y="1056">adiado • sem modelo ativo</text><text class="box-tiny" x="337" y="1074">Redis também adiado</text>
+        <rect class="box-bg slate" x="590" y="1010" width="245" height="78" rx="7"/><text class="box-title" x="607" y="1035">Áudio local CPU</text><text class="box-sub" x="607" y="1056">Faster-Whisper + Piper</text><text class="box-tiny" x="607" y="1074">implementado • opt-in</text>
+        <rect class="box-bg slate" x="860" y="1010" width="245" height="78" rx="7"/><text class="box-title" x="877" y="1035">Face / ReID / identidade</text><text class="box-sub" x="877" y="1056">fora da V0.1</text><text class="box-tiny" x="877" y="1074">exige autorização explícita</text>
+        <rect class="box-bg slate" x="1130" y="1010" width="300" height="78" rx="7"/><text class="box-title" x="1147" y="1035">Fine-tuning / modelo final</text><text class="box-sub" x="1147" y="1056">adiado • métricas primeiro</text><text class="box-tiny" x="1147" y="1074">sem treino automático</text>
+
+        <g class="legend" transform="translate(50 1145)"><circle cx="6" cy="0" r="5" fill="#22d3ee"/><text x="18" y="4">IA ativa</text><circle cx="94" cy="0" r="5" fill="#a78bfa"/><text x="106" y="4">controle determinístico</text><circle cx="275" cy="0" r="5" fill="#fbbf24"/><text x="287" y="4">experimental/planejada</text><text x="535" y="4">Mapa baseado em src/, package.json, README e plano operacional</text></g>
+      </svg>
+    </section>
+
+    <section class="cards">
+      <article class="card"><div class="card-head"><span class="dot c"></span><h2>IA ativa agora</h2></div><ul><li>Gemma local via Ollama: conversa, tools e VLM sob demanda.</li><li>YOLO11n ONNX em CPU: pessoas e classes COCO selecionadas.</li><li>RapidOCR/ONNX: OCR sob demanda em worker Python isolado.</li><li>Áudio local CPU: Faster-Whisper + Piper, opt-in.</li></ul></article>
+      <article class="card"><div class="card-head"><span class="dot v"></span><h2>O que governa a IA</h2></div><ul><li>ToolRegistry, PolicyEngine e GroundingGuard são determinísticos.</li><li>Eventos, PostgreSQL, World State, memória e auditoria ficam fora do LLM.</li><li>As tools expostas ao Gemma são read-only.</li></ul></article>
+      <article class="card"><div class="card-head"><span class="dot a"></span><h2>Planejado / adiado</h2></div><ul><li>Frigate/YOLOv9 CUDA: apenas spike e sidecar opcional.</li><li>Embeddings, fine-tuning, Face ID e identidade: adiados/opt-in.</li><li>Cloud TTS, retenção remota e ações seguem gates explícitos.</li></ul></article>
+    </section>
+
+    <section class="matrix">
+      <table><thead><tr><th>Camada</th><th>Usa IA?</th><th>Estado</th><th>Função</th></tr></thead><tbody>
+        <tr><td>Gemma / Ollama</td><td>Sim</td><td class="active">Ativo</td><td>Texto, tool calling e interpretação visual de snapshot.</td></tr>
+        <tr><td>YOLO11n / ONNX</td><td>Sim</td><td class="active">Ativo</td><td>Detecção de pessoas no RTSP, separada do Gemma.</td></tr>
+        <tr><td>RapidOCR / ONNX</td><td>Sim</td><td class="active">Ativo sob demanda</td><td>OCR em snapshots selecionados, sem loop contínuo.</td></tr>
+        <tr><td>Faster-Whisper + Piper</td><td>Sim</td><td class="planned">Implementado, opt-in</td><td>STT/TTS local CPU para push-to-talk.</td></tr>
+        <tr><td>DVR / FFmpeg / PostgreSQL / Drive</td><td>Não diretamente</td><td class="active">Ativo com gates</td><td>Grava, cataloga, arquiva com readback e aplica retenção 30/90/protected.</td></tr>
+        <tr><td>Gemma 4 E2B Q4_K_M</td><td>Sim</td><td class="planned">Descartado</td><td>~1,3 GiB menos na GPU, mas visão inadequada; tag removida.</td></tr>
+        <tr><td>Frigate / YOLOv9 CUDA</td><td>Sim</td><td class="planned">Experimental</td><td>Benchmark; não é dependência do Core.</td></tr>
+        <tr><td>Embeddings / Face ID / ReID</td><td>Sim</td><td class="planned">Planejado/opt-in</td><td>Adiado; identidade exige autorização explícita e cadastro local.</td></tr>
+        <tr><td>Propostas de ações</td><td>Não diretamente</td><td class="planned">Read-only</td><td>Gemma propõe; política exige confirmação e mantém físico bloqueado.</td></tr>
+        <tr><td>Policy, state, memória, eventos e auditoria</td><td>Não</td><td class="none">Determinístico</td><td>Controla e audita o que a IA pode propor ou afirmar.</td></tr>
+      </tbody></table>
+    </section>
+    <footer>Jarvis Core • mapa técnico local • runtime atual permanece protegido por flags e ações físicas bloqueadas</footer>
+  </main>
+</body>
+</html>
