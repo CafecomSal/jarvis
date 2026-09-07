@@ -108,6 +108,14 @@ export class PostgresEventStore implements EventStore {
     return rowToEvent(existing.rows[0]);
   }
 
+  async findById(id: string): Promise<HomeEvent | undefined> {
+    const result = await this.pool.query<EventRow>(
+      `SELECT ${EVENT_COLUMNS} FROM events WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? rowToEvent(result.rows[0]) : undefined;
+  }
+
   async list(limit = 100): Promise<HomeEvent[]> {
     const result = await this.pool.query<EventRow>(
       `SELECT ${EVENT_COLUMNS}

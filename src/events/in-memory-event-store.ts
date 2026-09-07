@@ -9,6 +9,7 @@ export interface EventStore extends EventAppender {
   list(limit?: number): Promise<HomeEvent[]>;
   search(query: string, limit?: number): Promise<HomeEvent[]>;
   query(filter?: EventQuery): Promise<HomeEvent[]>;
+  findById?(id: string): Promise<HomeEvent | undefined>;
 }
 
 export class InMemoryEventStore implements EventStore {
@@ -21,6 +22,11 @@ export class InMemoryEventStore implements EventStore {
     const stored = structuredClone(validated);
     this.events.push(stored);
     return structuredClone(stored);
+  }
+
+  async findById(id: string): Promise<HomeEvent | undefined> {
+    const event = this.events.find((stored) => stored.id === id);
+    return event ? structuredClone(event) : undefined;
   }
 
   async list(limit = 100): Promise<HomeEvent[]> {

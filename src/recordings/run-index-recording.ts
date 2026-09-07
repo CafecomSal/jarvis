@@ -13,6 +13,7 @@ export interface RecordingIndexOptions {
   recordingId: string;
   includeOcr: boolean;
   intervalMs: number;
+  force?: boolean;
 }
 
 type Environment = Record<string, string | undefined>;
@@ -30,10 +31,15 @@ export function parseRecordingIndexOptions(
 ): RecordingIndexOptions {
   let recordingId: string | undefined;
   let includeOcr = false;
+  let force = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--ocr') {
       includeOcr = true;
+      continue;
+    }
+    if (argument === '--force') {
+      force = true;
       continue;
     }
     if (argument === '--id') {
@@ -51,6 +57,7 @@ export function parseRecordingIndexOptions(
   return {
     recordingId,
     includeOcr,
+    ...(force ? { force: true } : {}),
     intervalMs: parsePositiveInteger(
       'JARVIS_RECORDING_INDEX_INTERVAL_MS',
       env.JARVIS_RECORDING_INDEX_INTERVAL_MS,
@@ -96,7 +103,7 @@ export async function runRecordingIndex(options: RecordingIndexOptions): Promise
       ocrModel: 'rapidocr-onnxruntime',
       provider: 'CPUExecutionProvider',
     });
-    console.log(JSON.stringify(await indexer.index(segment, { includeOcr: options.includeOcr })));
+    console.log(JSON.stringify(await indexer.index(segment, { includeOcr: options.includeOcr, ...(options.force ? { force: true } : {}) })));
   } finally {
     await postgresRecordings?.close();
     await postgresEvents?.close();

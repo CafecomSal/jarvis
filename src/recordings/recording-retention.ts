@@ -1,5 +1,5 @@
-import { rm, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { realpath, rm, stat } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { RecordingSegment, RecordingStore } from './recording-store.js';
 import { resolveRecordingFile } from './recording-file.js';
 import { RecordingRetentionBudget, type RetentionTier } from './retention-budget.js';
@@ -31,6 +31,7 @@ export interface RecordingRetentionOptions {
   eventDays?: number;
   maxBytes?: number;
   deleteAfterVerified?: boolean;
+  evidenceSnapshotsDirectory?: string;
 }
 
 export type RecordingArchiveRunner = (recordingId: string) => Promise<unknown>;
@@ -46,6 +47,7 @@ export class RecordingRetentionService {
   private readonly budget: RecordingRetentionBudget;
   private readonly maxBytes?: number;
   private readonly deleteAfterVerified: boolean;
+  private readonly evidenceSnapshotsDirectory?: string;
 
   constructor(
     private readonly store: RecordingStore,
@@ -60,12 +62,23 @@ export class RecordingRetentionService {
     });
     this.maxBytes = options.maxBytes;
     this.deleteAfterVerified = options.deleteAfterVerified ?? false;
+    this.evidenceSnapshotsDirectory = options.evidenceSnapshotsDirectory ? resolve(options.evidenceSnapshotsDirectory) : undefined;
     if (!Number.isFinite(this.maxAgeDays) || this.maxAgeDays <= 0) {
       throw new Error('Recording retention maxAgeDays must be greater than zero');
     }
     if (this.maxBytes !== undefined && (!Number.isFinite(this.maxBytes) || this.maxBytes <= 0)) {
       throw new Error('Recording retention maxBytes must be greater than zero');
     }
+  }
+
+  private async safeExistingRecordingPath(fileRef: string): Promise<string> {
+    const rootPath = await realpath(this.rootDirectory);
+    const actualPath = await realpath(resolveRecordingFile(this.rootDirectory, fileRef));
+    const relativePath = relative(rootPath, actualPath);
+    if (relativePath.startsWith('..') || isAbsolute(relativePath) || relativePath.split(sep).includes('..') || relativePath === '') {
+      throw new Error('Recording file reference escapes archive root');
+    }
+    return actualPath;
   }
 
   async plan(now = new Date()): Promise<RecordingRetentionPlan> {
@@ -78,7 +91,7 @@ export class RecordingRetentionService {
     for (const segment of segments) {
       let localBytes = 0;
       try {
-        const details = await stat(resolveRecordingFile(this.rootDirectory, segment.fileRef));
+        const details = await stat(await this.safeExistingRecordingPath(segment.fileRef));
         localBytes = details.isFile() ? details.size : 0;
       } catch {
         missingFiles += 1;
@@ -130,7 +143,28 @@ export class RecordingRetentionService {
           if (this.deleteAfterVerified) {
             const stored = await this.store.findById(candidate.segment.id);
             if (stored?.backupStatus === 'verified' && retentionTierFor(stored) !== 'protected') {
+              await this.safeExistingRecordingPath(stored.fileRef);
               await rm(resolveRecordingFile(this.rootDirectory, stored.fileRef), { force: true });
+              if (this.evidenceSnapshotsDirectory) {
+                const evidenceDirectory = resolve(this.evidenceSnapshotsDirectory, 'recordings', stored.id);
+                const evidenceRelative = relative(this.evidenceSnapshotsDirectory, evidenceDirectory);
+                if (evidenceRelative.startsWith('..') || isAbsolute(evidenceRelative) || evidenceRelative.split(sep).includes('..')) {
+                  throw new Error('Recording evidence path escapes snapshot root');
+                }
+                try {
+                  const snapshotRoot = await realpath(this.evidenceSnapshotsDirectory);
+                  const actualEvidenceDirectory = await realpath(evidenceDirectory);
+                  const actualRelative = relative(snapshotRoot, actualEvidenceDirectory);
+                  if (actualRelative.startsWith('..') || isAbsolute(actualRelative) || actualRelative.split(sep).includes('..') || actualRelative === '') {
+                    throw new Error('Recording evidence path escapes snapshot root');
+                  }
+                } catch (error) {
+                  if (error instanceof Error && error.message === 'Recording evidence path escapes snapshot root') throw error;
+                  // A missing evidence directory is already equivalent to a
+                  // successful cleanup; rm below remains idempotent.
+                }
+                await rm(evidenceDirectory, { recursive: true, force: true });
+              }
               deleted += 1;
             }
           }

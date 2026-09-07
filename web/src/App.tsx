@@ -198,44 +198,148 @@ function CamerasPageV2() {
   );
 }
 
-function useTimeline() {
-  const [data, setData] = useState<TimelineResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    void api.getTimeline('?limit=100').then((result) => { if (active) setData(result); }).catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : 'falha de timeline'); });
-    return () => { active = false; };
-  }, []);
-  return { data, error };
+function timelineObservationLabel(observation: JsonRecord): string {
+  if (stringValue(observation.kind) === 'ocr') return stringValue(observation.text, 'OCR');
+  return stringValue(observation.objectClass, stringValue(observation.eventType, 'observação'));
 }
 
-function TimelineRow({ item }: { item: TimelineItem }) {
+function TimelineRow({ item, onSelect }: { item: TimelineItem; onSelect?: (item: TimelineItem) => void }) {
   const recording = item.kind === 'recording' ? item.recording as JsonRecord : undefined;
-  return (
-    <div className="timeline-row">
-      <div className={`timeline-icon ${item.kind === 'recording' ? 'timeline-recording' : 'timeline-event'}`}>{item.kind === 'recording' ? '▶' : '✦'}</div>
-      <div className="timeline-main"><strong>{item.type}</strong><span>{formatTimestamp(item.timestamp)}</span></div>
+  const observations = item.kind === 'evidence' && Array.isArray(item.observations)
+    ? item.observations as JsonRecord[]
+    : [];
+  const content = (
+    <>
+      <div className={`timeline-icon ${item.kind === 'recording' ? 'timeline-recording' : item.kind === 'evidence' ? 'timeline-evidence' : 'timeline-event'}`}>
+        {item.kind === 'recording' ? '▶' : item.kind === 'evidence' ? '▣' : '✦'}
+      </div>
+      <div className="timeline-main">
+        <strong>{item.kind === 'evidence' ? 'frame de evidência' : item.type}</strong>
+        <span>{formatTimestamp(item.timestamp)}</span>
+        {item.kind === 'evidence' && observations.length > 0 && <span>{observations.map(timelineObservationLabel).join(' · ')}</span>}
+      </div>
       <div className="timeline-meta">
         <span>{stringValue(item.camera ?? recording?.camera, 'sem câmera')}</span>
         {recording && <span>{numberValue(recording.durationMs)} ms · {numberValue(recording.bytes)} bytes</span>}
+        {item.kind === 'recording' && <Pill tone={StatusTone(stringValue(item.indexStatus, 'not_indexed'))}>{stringValue(item.indexStatus, 'not_indexed')}</Pill>}
+        {item.kind === 'evidence' && observations.map((observation, index) => (
+          <Pill key={`${stringValue(observation.eventId, String(index))}`} tone={typeof observation.confidence === 'number' && observation.confidence >= 0.7 ? 'ok' : 'warn'}>
+            {typeof observation.confidence === 'number' ? `${Math.round(observation.confidence * 100)}%` : 'sem score'}
+          </Pill>
+        ))}
         {typeof item.confidence === 'number' && <Pill tone={item.confidence >= 0.7 ? 'ok' : 'warn'}>{Math.round(item.confidence * 100)}%</Pill>}
       </div>
-    </div>
+    </>
+  );
+  return onSelect ? <button className="timeline-row timeline-row-button" type="button" onClick={() => onSelect(item)}>{content}</button> : <div className="timeline-row">{content}</div>;
+}
+
+function EvidenceSidePanel({ item, onClose }: { item: TimelineItem | null; onClose: () => void }) {
+  const [detail, setDetail] = useState<JsonRecord | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [imageFailed, setImageFailed] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (!item || item.kind !== 'evidence') return;
+    setDetail(null); setError(null); setImageFailed(false);
+    void api.getEvidence(item.id).then((result) => setDetail(result as unknown as JsonRecord)).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'evidência indisponível'));
+  }, [item]);
+  if (!item || item.kind !== 'evidence') return null;
+  const evidence = (detail?.evidence ?? item.evidence) as JsonRecord;
+  const observations = Array.isArray(detail?.observations) ? detail.observations as JsonRecord[] : item.observations as JsonRecord[];
+  const recordingId = stringValue(evidence.recordingSegmentId, stringValue(item.recordingSegmentId, ''));
+  const offsetMs = numberValue(evidence.frameTimestampMs, numberValue((item.evidence as JsonRecord | undefined)?.frameTimestampMs, '0'));
+  const offsetSeconds = Number(offsetMs) / 1000;
+  const imageUrl = api.getEvidenceImageUrl(item.id);
+  return (
+    <aside className="evidence-panel" aria-label="Detalhes da evidência">
+      <div className="evidence-panel-head"><div><div className="eyebrow">EVIDÊNCIA</div><h3>{formatTimestamp(item.timestamp)}</h3></div><button className="button secondary" type="button" onClick={onClose}>Fechar</button></div>
+      {error && <ErrorMessage message={error} />}
+      {!detail && !error && <Loading />}
+      <div className="evidence-media">
+        {!imageFailed ? <img src={imageUrl} alt={`Evidência da câmera ${item.camera}`} onError={() => setImageFailed(true)} /> : <div className="camera-fallback"><strong>Imagem indisponível</strong><span>O arquivo foi removido ou não está acessível.</span></div>}
+        {recordingId && <video ref={videoRef} controls preload="metadata" src={api.getRecordingClipUrl(recordingId)} onLoadedMetadata={() => { if (videoRef.current && Number.isFinite(offsetSeconds)) videoRef.current.currentTime = Math.max(0, offsetSeconds); }} aria-label="Segmento da evidência" />}
+      </div>
+      <div className="detail-grid evidence-details">
+        <div><span>Câmera</span><strong>{stringValue(item.camera)}</strong></div>
+        <div><span>Segmento</span><strong>{recordingId || 'não catalogado'}</strong></div>
+        <div><span>Offset</span><strong>{recordingId ? `${Math.round(offsetSeconds * 1000)} ms` : '—'}</strong></div>
+        <div><span>Bytes</span><strong>{numberValue(evidence.bytes)}</strong></div>
+      </div>
+      <div className="evidence-observations"><div className="eyebrow">OBSERVAÇÕES</div>{observations.length ? observations.map((observation, index) => <div className="evidence-observation" key={stringValue(observation.eventId, `observation-${index}`)}><strong>{timelineObservationLabel(observation)}</strong><span>{typeof observation.confidence === 'number' ? `${Math.round(observation.confidence * 100)}%` : 'sem score'} · {stringValue(observation.eventType)}</span></div>) : <span className="muted">Nenhuma observação associada.</span>}</div>
+    </aside>
   );
 }
 
+function localDateTimeValue(date: Date): string {
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
 function TimelinePage() {
-  const { data, error } = useTimeline();
+  const initialFrom = useMemo(() => localDateTimeValue(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)), []);
+  const [cameraFilter, setCameraFilter] = useState('front');
+  const [fromFilter, setFromFilter] = useState(initialFrom);
+  const [toFilter, setToFilter] = useState(() => localDateTimeValue(new Date()));
+  const [eventType, setEventType] = useState('');
+  const [objectClass, setObjectClass] = useState('');
+  const [ocrQuery, setOcrQuery] = useState('');
+  const [evidenceOnly, setEvidenceOnly] = useState(false);
+  const [data, setData] = useState<TimelineResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState<TimelineItem | null>(null);
+
+  function queryString(cursor?: string): string {
+    const params = new URLSearchParams();
+    if (cameraFilter.trim()) params.set('camera', cameraFilter.trim());
+    if (fromFilter) params.set('from', new Date(fromFilter).toISOString());
+    if (toFilter) params.set('to', new Date(toFilter).toISOString());
+    if (eventType) params.set('eventType', eventType);
+    if (objectClass.trim()) params.set('objectClass', objectClass.trim());
+    if (ocrQuery.trim()) params.set('ocrQuery', ocrQuery.trim());
+    if (evidenceOnly) params.set('evidenceOnly', 'true');
+    if (cursor) params.set('cursor', cursor);
+    params.set('limit', '50');
+    return `?${params.toString()}`;
+  }
+
+  async function load(cursor?: string, append = false) {
+    setLoading(true); setError(null);
+    try {
+      const result = await api.getTimeline(queryString(cursor));
+      setData((current) => append && current ? { ...result, items: [...current.items, ...result.items] } : result);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'falha de timeline');
+    } finally { setLoading(false); }
+  }
+
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [cameraFilter, fromFilter, toFilter, eventType, objectClass, ocrQuery, evidenceOnly]);
+
   return (
     <div className="page-stack">
-      <div className="section-intro"><div><div className="eyebrow">HISTÓRICO</div><h2>Timeline / DVR</h2><p>Gravações, evidências e observações em uma única linha temporal.</p></div><button className="button secondary" onClick={() => window.location.reload()}>Atualizar</button></div>
-      <ErrorMessage message={error} />
+      <div className="section-intro"><div><div className="eyebrow">HISTÓRICO</div><h2>Timeline / DVR</h2><p>Gravações, evidências e observações em uma única linha temporal.</p></div><div className="button-row"><Pill tone="neutral">read-only</Pill><button className="button secondary" type="button" onClick={() => void load()} disabled={loading}>Atualizar</button></div></div>
       <Card className="timeline-card">
-        <div className="filter-bar"><span className="filter-label">front</span><span className="filter-label">últimos eventos</span><span className="filter-spacer" /><Pill tone="neutral">read-only</Pill></div>
+        <div className="timeline-filters">
+          <label><span>Câmera</span><input value={cameraFilter} onChange={(event) => setCameraFilter(event.target.value)} placeholder="front" /></label>
+          <label><span>De</span><input type="datetime-local" value={fromFilter} onChange={(event) => setFromFilter(event.target.value)} /></label>
+          <label><span>Até</span><input type="datetime-local" value={toFilter} onChange={(event) => setToFilter(event.target.value)} /></label>
+          <label><span>Evento</span><select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="">todos</option><option value="camera.snapshot">snapshot</option><option value="object.observed">objeto</option><option value="ocr.observation">OCR</option><option value="person.detected">pessoa</option></select></label>
+          <label><span>Objeto</span><input value={objectClass} onChange={(event) => setObjectClass(event.target.value)} placeholder="car, person…" /></label>
+          <label><span>OCR</span><input value={ocrQuery} onChange={(event) => setOcrQuery(event.target.value)} placeholder="termo" /></label>
+          <label className="checkbox-filter"><input type="checkbox" checked={evidenceOnly} onChange={(event) => setEvidenceOnly(event.target.checked)} /><span>somente evidências</span></label>
+        </div>
+        <ErrorMessage message={error} />
         {!data && !error && <Loading />}
         {data?.items.length === 0 && <Empty title="Timeline vazia" detail="Ainda não há gravações ou eventos dentro do filtro atual." />}
-        {data && data.items.length > 0 && <div className="timeline-list">{data.items.map((item) => <TimelineRow key={`${item.kind}-${item.id}`} item={item} />)}</div>}
+        {data && data.items.length > 0 && <div className="timeline-list">{data.items.map((item) => <TimelineRow key={`${item.kind}-${item.id}`} item={item} onSelect={item.kind === 'evidence' ? setSelected : undefined} />)}</div>}
+        {data?.hasMore && <div className="load-more"><button className="button secondary" type="button" onClick={() => data.nextCursor && void load(data.nextCursor, true)} disabled={loading}>Carregar mais</button></div>}
       </Card>
+      <EvidenceSidePanel item={selected} onClose={() => setSelected(null)} />
     </div>
   );
 }

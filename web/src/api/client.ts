@@ -4,13 +4,13 @@ export interface SystemHealthSnapshot {
   core: { status: string };
   model: { status: string; name: string; runtime: string };
   database: { status: string };
-  recordings: { status: string; staging: string };
+  recordings: { status: string; staging: string; mode?: string; camera?: string; [key: string]: unknown };
   audio: { status: string; source?: string };
   network: { exposure: string; bind: string };
 }
 
 export interface TimelineItem {
-  kind: 'event' | 'recording';
+  kind: 'event' | 'evidence' | 'recording';
   id: string;
   timestamp: string;
   type: string;
@@ -19,7 +19,18 @@ export interface TimelineItem {
 
 export interface TimelineResult {
   count: number;
+  hasMore: boolean;
+  nextCursor?: string;
   items: TimelineItem[];
+}
+
+export interface EvidenceResponse {
+  id: string;
+  evidence: Record<string, unknown>;
+  observations: Array<Record<string, unknown>>;
+  imageUrl: string;
+  clipUrl?: string;
+  recording?: Record<string, unknown> | null;
 }
 
 export interface ApiTag {
@@ -161,6 +172,18 @@ export class JarvisApiClient {
 
   getTimeline(query = ''): Promise<TimelineResult> {
     return this.request<TimelineResult>(`/timeline${query}`);
+  }
+
+  getEvidence(id: string): Promise<EvidenceResponse> {
+    return this.request<EvidenceResponse>(`/evidence/${encodeURIComponent(id)}`);
+  }
+
+  getEvidenceImageUrl(id: string): string {
+    return `/evidence/${encodeURIComponent(id)}/image`;
+  }
+
+  getRecordingClipUrl(id: string): string {
+    return `/recordings/${encodeURIComponent(id)}/clip`;
   }
 
   getCameraHealth(camera: string): Promise<Record<string, unknown>> {

@@ -18,6 +18,8 @@ export interface RecordingQuery {
   from?: string;
   to?: string;
   limit?: number;
+  /** Include segments that overlap the interval, rather than only segments that start in it. */
+  overlap?: boolean;
 }
 
 export interface RecordingStore {
@@ -25,6 +27,7 @@ export interface RecordingStore {
   list(query?: RecordingQuery): Promise<RecordingSegment[]>;
   findById(id: string): Promise<RecordingSegment | undefined>;
   updateBackup(id: string, update: RecordingBackupUpdate): Promise<RecordingSegment>;
+  promoteToEvent?(id: string): Promise<RecordingSegment>;
 }
 
 function clone(segment: RecordingSegment): RecordingSegment {
@@ -56,7 +59,9 @@ export class InMemoryRecordingStore implements RecordingStore {
     const limit = query.limit ?? 100;
     return this.segments
       .filter((segment) => (!query.camera || segment.camera === query.camera))
-      .filter((segment) => Date.parse(segment.startedAt) >= from && Date.parse(segment.startedAt) <= to)
+      .filter((segment) => query.overlap
+        ? Date.parse(segment.endedAt) >= from && Date.parse(segment.startedAt) <= to
+        : Date.parse(segment.startedAt) >= from && Date.parse(segment.startedAt) <= to)
       .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))
       .slice(-limit)
       .map(clone);
@@ -78,6 +83,15 @@ export class InMemoryRecordingStore implements RecordingStore {
       ...(update.driveWebViewLink === undefined ? {} : { driveWebViewLink: update.driveWebViewLink }),
       ...(update.backupVerifiedAt === undefined ? {} : { backupVerifiedAt: update.backupVerifiedAt }),
     });
+    this.segments[index] = updated;
+    return clone(updated);
+  }
+
+  async promoteToEvent(id: string): Promise<RecordingSegment> {
+    const index = this.segments.findIndex((item) => item.id === id);
+    if (index < 0) throw new Error(`Recording segment not found: ${id}`);
+    const current = this.segments[index];
+    const updated = validateSegment({ ...current, retentionTier: current.protected ? 'protected' : 'event' });
     this.segments[index] = updated;
     return clone(updated);
   }
@@ -209,7 +223,7 @@ export class PostgresRecordingStore implements RecordingStore {
       clauses.push(clause.replace('?', `$${parameters.length}`));
     };
     if (query.camera) add('camera = ?', query.camera);
-    if (query.from) add('started_at >= ?', query.from);
+    if (query.from) add(query.overlap ? 'ended_at >= ?' : 'started_at >= ?', query.from);
     if (query.to) add('started_at <= ?', query.to);
     const limit = query.limit ?? 100;
     parameters.push(limit);
@@ -253,6 +267,18 @@ export class PostgresRecordingStore implements RecordingStore {
         update.driveWebViewLink ?? null,
         update.backupVerifiedAt ?? null,
       ],
+    );
+    if (!result.rows[0]) throw new Error(`Recording segment not found: ${id}`);
+    return rowToSegment(result.rows[0]);
+  }
+
+  async promoteToEvent(id: string): Promise<RecordingSegment> {
+    const result = await this.pool.query<RecordingRow>(
+      `UPDATE recording_segments
+       SET retention_tier = CASE WHEN protected THEN 'protected' ELSE 'event' END
+       WHERE id = $1
+       RETURNING ${RECORDING_COLUMNS}`,
+      [id],
     );
     if (!result.rows[0]) throw new Error(`Recording segment not found: ${id}`);
     return rowToSegment(result.rows[0]);

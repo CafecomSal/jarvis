@@ -39,11 +39,17 @@ describe('reprodução read-only de gravações', () => {
       });
 
       const response = await app.inject({ method: 'GET', url: '/recordings/rec-clip-1/clip' });
+      const range = await app.inject({ method: 'GET', url: '/recordings/rec-clip-1/clip', headers: { range: 'bytes=2-5' } });
+      const invalidRange = await app.inject({ method: 'GET', url: '/recordings/rec-clip-1/clip', headers: { range: 'bytes=999-' } });
       await app.close();
 
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toContain('video/x-matroska');
       expect(response.body).toBe('clip-bytes');
+      expect(range.statusCode).toBe(206);
+      expect(range.headers['content-range']).toBe('bytes 2-5/10');
+      expect(range.body).toBe('ip-b');
+      expect(invalidRange.statusCode).toBe(416);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -63,6 +69,18 @@ describe('reprodução read-only de gravações', () => {
       const missing = await app.inject({ method: 'GET', url: '/recordings/rec-missing/clip' });
       await app.close();
       expect(missing.statusCode).toBe(404);
+
+      const escaped = new InMemoryRecordingStore();
+      await escaped.append({ ...segment, id: 'rec-escaped', fileRef: '../outside.mkv', bytes: 1 });
+      const escapedApp = buildApp({
+        events: new InMemoryEventStore(),
+        recordings: escaped,
+        recordingsDirectory: directory,
+        worldState: new WorldStateProjection(),
+      });
+      const traversal = await escapedApp.inject({ method: 'GET', url: '/recordings/rec-escaped/clip' });
+      await escapedApp.close();
+      expect(traversal.statusCode).toBe(400);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

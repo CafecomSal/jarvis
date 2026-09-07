@@ -26,6 +26,7 @@ export const ObjectObservationDataSchema = z.object({
   recordingSegmentId: z.string().min(1).optional(),
   frameTimestampMs: z.number().int().nonnegative().optional(),
   historical: z.boolean().optional(),
+  confirmed: z.boolean().optional(),
   latencyMs: z.number().finite().nonnegative().optional(),
 });
 

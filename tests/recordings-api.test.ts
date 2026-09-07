@@ -53,4 +53,25 @@ describe('API read-only de gravações', () => {
     expect(response.statusCode).toBe(501);
     expect(response.json()).toMatchObject({ error: 'recording_catalog_unavailable' });
   });
+
+  it('aplica filtro de objeto usando eventos canônicos mesmo sem projeção pronta', async () => {
+    const recordings = new InMemoryRecordingStore();
+    await recordings.append(segment);
+    const events = new InMemoryEventStore();
+    await events.append({
+      id: 'evt-canonical-object',
+      type: 'object.observed',
+      timestamp: '2026-09-04T12:00:30.000Z',
+      source: { type: 'onnx_continuous', id: 'yolo.onnx' },
+      subject: { type: 'object', id: 'car' },
+      data: { camera: 'front', className: 'car', recordingSegmentId: segment.id, evidenceEventId: 'snapshot-canonical' },
+    });
+    const app = buildApp({ events, recordings, worldState: new WorldStateProjection() });
+
+    const response = await app.inject({ method: 'GET', url: '/recordings?objectClass=car&from=2026-09-04T12:00:20.000Z&to=2026-09-04T12:00:40.000Z' });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ recordings: [{ id: segment.id }] });
+  });
 });

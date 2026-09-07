@@ -31,7 +31,7 @@ export interface SystemHealthSnapshot {
   core: { status: HealthStatus };
   model: { status: HealthStatus; name: string; runtime: string };
   database: { status: HealthStatus };
-  recordings: { status: HealthStatus; staging: 'temporary' | 'disabled' };
+  recordings: { status: HealthStatus; staging: 'temporary' | 'disabled'; [key: string]: unknown };
   audio: { status: HealthStatus; source?: string } & SystemHealthAudioDetails;
   network: { exposure: 'tailscale-only' | 'local-only' | 'unknown'; bind: 'loopback' | 'private' | 'public' | 'unknown' };
   resources?: SystemHealthResources;
