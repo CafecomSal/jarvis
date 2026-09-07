@@ -54,10 +54,13 @@ describe.skipIf(!connectionString)('retenção de sessão de áudio no PostgreSQ
       transcript: { text: 'fixture privado', provider: 'fixture', model: 'fixture', latencyMs: 10 },
       responseText: 'resposta fixture',
     });
-    await sessions.append({ id: sessionIds[1], source: 'pc', status: 'failed', startedAt: oldDate, endedAt: oldDate, error: 'fixture failure' });
     await sessions.append({
-      id: sessionIds[2], source: 'pc', status: 'completed', startedAt: oldDate,
-      endedAt: '2026-08-01T03:00:02.000Z', conversationId: 'test-pg-retention-race-conversation',
+      id: sessionIds[1], source: 'pc', status: 'failed',
+      startedAt: '2026-08-01T03:00:01.000Z', endedAt: '2026-08-01T03:00:01.000Z', error: 'fixture failure',
+    });
+    await sessions.append({
+      id: sessionIds[2], source: 'pc', status: 'completed', startedAt: '2026-08-01T03:00:02.000Z',
+      endedAt: '2026-08-01T03:00:04.000Z', conversationId: 'test-pg-retention-race-conversation',
     });
     await sessions.append({ id: sessionIds[3], source: 'pc', status: 'transcribing', startedAt: oldDate });
     await sessions.append({ id: sessionIds[4], source: 'pc', status: 'completed', startedAt: '2026-09-05T03:00:00.000Z' });
@@ -87,7 +90,7 @@ describe.skipIf(!connectionString)('retenção de sessão de áudio no PostgreSQ
 
     // Simulate a concurrent status transition after preview; it must remain active.
     await sessions.deleteByIds([sessionIds[2]]);
-    await sessions.append({ id: sessionIds[2], source: 'pc', status: 'transcribing', startedAt: oldDate });
+    await sessions.append({ id: sessionIds[2], source: 'pc', status: 'transcribing', startedAt: '2026-08-01T03:00:02.000Z' });
 
     const result = await service.execute(preview.previewId, 'APAGAR 3 SESSÕES', 'retention-fixture');
     tombstoneConversationId = `purge-${preview.previewId}`;
