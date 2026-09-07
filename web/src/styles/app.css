@@ -128,16 +128,37 @@ p { color: var(--muted); line-height: 1.6; font-size: 13px; }
 .filter-bar { display: flex; align-items: center; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--border-soft); margin-bottom: 2px; }
 .filter-label { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 5px; padding: 5px 7px; }
 .filter-spacer { flex: 1; }
+.button-row { display: flex; align-items: center; gap: 8px; }
+.timeline-filters { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 9px; padding-bottom: 14px; margin-bottom: 2px; border-bottom: 1px solid var(--border-soft); }
+.timeline-filters label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+.timeline-filters input:not([type="checkbox"]), .timeline-filters select { min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); padding: 7px 8px; outline: none; font-size: 10px; }
+.timeline-filters input:not([type="checkbox"]):focus, .timeline-filters select:focus { border-color: rgba(239,183,102,.65); box-shadow: 0 0 0 3px rgba(239,183,102,.08); }
+.checkbox-filter { display: flex !important; align-items: end; gap: 7px; padding-bottom: 7px; }
+.checkbox-filter input { accent-color: var(--accent); }
 .timeline-list { display: grid; }
 .timeline-row { display: grid; grid-template-columns: 30px minmax(150px, 1fr) minmax(140px, .8fr); align-items: center; gap: 12px; min-height: 67px; border-bottom: 1px solid var(--border-soft); }
 .timeline-row:last-child { border-bottom: 0; }
+.timeline-row-button { width: 100%; padding: 0; border-top: 0; border-left: 0; border-right: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.timeline-row-button:hover { background: rgba(239,183,102,.045); }
 .timeline-icon { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; }
 .timeline-recording { color: var(--blue); background: rgba(138,184,233,.11); }
 .timeline-event { color: var(--accent); background: rgba(239,183,102,.11); }
+.timeline-evidence { color: #99d8bd; background: rgba(116,205,166,.12); }
 .timeline-main, .timeline-meta { display: grid; gap: 5px; min-width: 0; }
 .timeline-main strong { font-size: 12px; color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-main span, .timeline-meta span { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-meta { justify-items: end; }
+.load-more { display: flex; justify-content: center; padding-top: 14px; }
+.evidence-panel { position: fixed; z-index: 10; top: 0; right: 0; width: min(480px, 94vw); height: 100vh; overflow: auto; padding: 22px; background: var(--panel-strong); border-left: 1px solid var(--border); box-shadow: -18px 0 50px rgba(0,0,0,.35); }
+.evidence-panel-head { display: flex; align-items: start; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
+.evidence-panel-head h3 { margin-top: 5px; font-size: 16px; }
+.evidence-media { display: grid; gap: 10px; }
+.evidence-media img, .evidence-media video { width: 100%; max-height: 360px; object-fit: contain; background: #070a0f; border: 1px solid var(--border-soft); border-radius: 8px; }
+.evidence-details { margin-top: 14px; }
+.evidence-observations { display: grid; gap: 8px; margin-top: 18px; }
+.evidence-observation { display: grid; gap: 4px; padding: 9px 10px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--panel); }
+.evidence-observation strong { font-size: 11px; color: var(--text); }
+.evidence-observation span { color: var(--muted); font-size: 10px; }
 
 .event-table { display: grid; }
 .event-row { display: grid; grid-template-columns: minmax(100px, .7fr) minmax(180px, 1fr) minmax(80px, .45fr); align-items: center; gap: 16px; min-height: 60px; border-bottom: 1px solid var(--border-soft); }
@@ -230,6 +251,8 @@ p { color: var(--muted); line-height: 1.6; font-size: 13px; }
   .camera-viewport { min-height: 250px; }
   .camera-footer { flex-wrap: wrap; justify-content: flex-start; }
   .session-filters { grid-template-columns: 1fr 1fr; }
+  .timeline-filters { grid-template-columns: 1fr 1fr; }
+  .timeline-filters label:last-child { grid-column: 1 / -1; }
   .session-filters label:first-child { grid-column: 1 / -1; }
   .footer { display: grid; gap: 6px; }
 }

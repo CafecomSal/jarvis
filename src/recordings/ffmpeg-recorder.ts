@@ -34,6 +34,7 @@ export interface FfmpegRunOptions {
   videoHeight?: number;
   videoBitrateKbps?: number;
   audioBitrateKbps?: number;
+  signal?: AbortSignal;
 }
 
 export type FfmpegRunner = (options: FfmpegRunOptions) => Promise<void>;
@@ -120,6 +121,11 @@ function defaultRunFfmpeg(options: FfmpegRunOptions): Promise<void> {
       options.outputPath,
     ], { windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] });
     let settled = false;
+    const abort = (): void => {
+      if (settled) return;
+      child.kill();
+      finish(() => reject(new Error('FFmpeg recording stopped')));
+    };
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -132,8 +138,14 @@ function defaultRunFfmpeg(options: FfmpegRunOptions): Promise<void> {
       clearTimeout(timeout);
       callback();
     };
+    if (options.signal?.aborted) {
+      abort();
+      return;
+    }
+    options.signal?.addEventListener('abort', abort, { once: true });
     child.once('error', () => finish(() => reject(new Error('FFmpeg recorder process could not start'))));
     child.once('close', (code) => finish(() => {
+      options.signal?.removeEventListener('abort', abort);
       if (code !== 0) {
         reject(new Error('FFmpeg could not record the RTSP segment'));
         return;
@@ -211,6 +223,7 @@ export class FfmpegSegmentRecorder {
   private readonly clock: () => Date;
   private readonly runFfmpeg: FfmpegRunner;
   private readonly probe: FfmpegProbeRunner;
+  private activeAbortController?: AbortController;
 
   constructor(options: FfmpegSegmentRecorderOptions) {
     this.outputDirectory = resolve(options.outputDirectory);
@@ -265,6 +278,8 @@ export class FfmpegSegmentRecorder {
     const dateDirectory = startedAt.toISOString().slice(0, 10);
     const outputPath = resolve(this.outputDirectory, camera, dateDirectory, `${id}.mkv`);
     await mkdir(dirname(outputPath), { recursive: true });
+    const abortController = new AbortController();
+    this.activeAbortController = abortController;
 
     try {
       await this.runFfmpeg({
@@ -282,6 +297,7 @@ export class FfmpegSegmentRecorder {
         ...(this.videoHeight === undefined ? {} : { videoHeight: this.videoHeight }),
         ...(this.videoBitrateKbps === undefined ? {} : { videoBitrateKbps: this.videoBitrateKbps }),
         ...(this.audioBitrateKbps === undefined ? {} : { audioBitrateKbps: this.audioBitrateKbps }),
+        signal: abortController.signal,
       });
       const fileStats = await stat(outputPath);
       if (!fileStats.isFile() || fileStats.size === 0) throw new Error('FFmpeg produced an empty recording');
@@ -308,7 +324,13 @@ export class FfmpegSegmentRecorder {
     } catch (error) {
       await rm(outputPath, { force: true });
       throw error;
+    } finally {
+      if (this.activeAbortController === abortController) this.activeAbortController = undefined;
     }
+  }
+
+  close(): void {
+    this.activeAbortController?.abort();
   }
 }
 
@@ -321,5 +343,9 @@ export class RecordingManager {
   async recordOnce(camera: string, streamUrl: string, durationMs: number): Promise<RecordingSegment> {
     const segment = await this.recorder.recordOnce(camera, streamUrl, durationMs);
     return this.store.append(segment);
+  }
+
+  close(): void {
+    this.recorder.close();
   }
 }

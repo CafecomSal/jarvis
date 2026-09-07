@@ -17,6 +17,11 @@ import { SemanticMemory } from './memory/semantic-memory.js';
 import type { RecordingStore } from './recordings/recording-store.js';
 import { resolveRecordingFile } from './recordings/recording-file.js';
 import { TimelineService } from './timeline/timeline-service.js';
+import type { EvidenceIndexStore, EvidenceObservation, MediaEvidence } from './evidence/evidence-index-store.js';
+import { evidenceFromEvent as mediaEvidenceFromEvent, observationFromHomeEvent, ProjectingEventStore, type EvidenceEventProjection } from './evidence/event-projection.js';
+import type { RecordingIndexRunStore } from './recordings/recording-index-run-store.js';
+import type { RecordingRuntimeHealth } from './recordings/recording-runtime.js';
+import { matchingRecordingIds } from './recordings/recording-query.js';
 import { TagQuerySchema } from './tags/tag-schema.js';
 import type { TagService } from './tags/tag-service.js';
 import type { SystemHealthSnapshot } from './health/system-health.js';
@@ -39,8 +44,8 @@ import type { ActionProposalStore } from './actions/action-store.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { resolve } from 'node:path';
-import { access } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { access, realpath, stat as statFile } from 'node:fs/promises';
 import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -63,6 +68,10 @@ export interface AppDependencies {
   personNotifier?: PersonNotifier;
   recordings?: RecordingStore;
   recordingsDirectory?: string;
+  evidenceIndex?: EvidenceIndexStore;
+  indexRuns?: RecordingIndexRunStore;
+  evidenceProjection?: Pick<EvidenceEventProjection, 'project' | 'projectSafely'>;
+  recordingRuntimeHealth?: () => Promise<RecordingRuntimeHealth>;
   tags?: TagService;
   audioSessions?: AudioSessionStore;
   audioPipeline?: Pick<AudioPipelineType, 'process'>;
@@ -73,6 +82,7 @@ export interface AppDependencies {
   runtimeSettings?: RuntimeSettingsService;
   groqApiKeyConfigured?: boolean;
   audioSessionRetention?: Pick<AudioSessionRetentionService, 'preview' | 'execute'>;
+  databaseConfigured?: boolean;
   importance?: ImportanceStore;
   watchSessions?: WatchSessionStore;
   actions?: ActionProposalStore;
@@ -98,6 +108,8 @@ const RecordingsQuerySchema = z.object({
   camera: z.string().min(1).optional(),
   from: z.string().datetime({ offset: true }).optional(),
   to: z.string().datetime({ offset: true }).optional(),
+  objectClass: z.string().min(1).optional(),
+  ocrQuery: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(100),
 });
 
@@ -105,6 +117,11 @@ const TimelineQuerySchema = z.object({
   camera: z.string().min(1).optional(),
   from: z.string().datetime({ offset: true }).optional(),
   to: z.string().datetime({ offset: true }).optional(),
+  eventType: z.string().min(1).optional(),
+  objectClass: z.string().min(1).optional(),
+  ocrQuery: z.string().min(1).optional(),
+  evidenceOnly: z.coerce.boolean().optional(),
+  cursor: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(100),
 });
 
@@ -157,6 +174,9 @@ const ActionProposalQuerySchema = z.object({
 
 export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
   const events = dependencies.events ?? new InMemoryEventStore();
+  const eventStore = dependencies.evidenceProjection
+    ? new ProjectingEventStore(events, dependencies.evidenceProjection)
+    : events;
   const audit = dependencies.audit ?? new InMemoryAuditStore();
   const worldState = dependencies.worldState ?? new WorldStateProjection();
   const model = dependencies.model ?? process.env.JARVIS_MODEL ?? 'gemma-hermes:latest';
@@ -186,17 +206,22 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     })
     : undefined);
   const tools = dependencies.tools ?? createDefaultToolRegistry({
-    events,
+    events: eventStore,
     worldState,
     camera,
     audit,
     semanticMemory,
     cameraLocations,
     recordings: dependencies.recordings,
+    evidenceIndex: dependencies.evidenceIndex,
+    indexRuns: dependencies.indexRuns,
   });
-  const timeline = new TimelineService(events, dependencies.recordings);
+  const timeline = new TimelineService(eventStore, dependencies.recordings, {
+    evidenceIndex: dependencies.evidenceIndex,
+    indexRuns: dependencies.indexRuns,
+  });
   const gateway = dependencies.gateway ?? new OllamaGateway({ baseUrl: ollamaBaseUrl, model });
-  const orchestrator = new ConversationOrchestrator(gateway, tools, model, events, undefined, audit);
+  const orchestrator = new ConversationOrchestrator(gateway, tools, model, eventStore, undefined, audit);
   const audioPipeline = dependencies.audioPipeline
     ?? (dependencies.audioStt && dependencies.audioTts && dependencies.audioSessions
       ? new AudioPipeline({
@@ -215,7 +240,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
       : undefined);
   const systemHealth = dependencies.systemHealth ?? (() => createRuntimeSystemHealth({
     model,
-    databaseConfigured: Boolean(process.env.DATABASE_URL),
+    databaseConfigured: dependencies.databaseConfigured ?? Boolean(process.env.DATABASE_URL),
     recordingsConfigured: Boolean(dependencies.recordings),
     audioConfigured: Boolean(audioPipeline),
     exposure: process.env.JARVIS_TAILSCALE_SERVE_ENABLED === 'true' ? 'tailscale-only' : 'local-only',
@@ -243,7 +268,10 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
       events: 'GET|POST /events',
       audit: 'GET /audit',
       recordings: 'GET /recordings',
+      recordingEvidence: 'GET /recordings/:id/evidence',
       recordingClip: 'GET /recordings/:id/clip',
+      evidence: 'GET /evidence/:id',
+      evidenceImage: 'GET /evidence/:id/image',
       timeline: 'GET /timeline',
       cameraHealth: 'GET /cameras/:camera/health',
       cameraLive: 'GET /cameras/:camera/live',
@@ -262,13 +290,35 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
 
   app.get('/system/health', async (_request, reply) => {
     const snapshot = await systemHealth();
+    let effectiveSnapshot = snapshot;
+    if (dependencies.recordingRuntimeHealth) {
+      try {
+        const recordingRuntime = await dependencies.recordingRuntimeHealth();
+        const runtimeDegraded = ['degraded', 'disabled', 'starting', 'stopped'].includes(recordingRuntime.status);
+        effectiveSnapshot = {
+          ...snapshot,
+          status: runtimeDegraded && snapshot.status === 'ok' ? 'degraded' : snapshot.status,
+          recordings: {
+            ...snapshot.recordings,
+            ...recordingRuntime,
+            status: recordingRuntime.status === 'healthy' ? 'configured' : recordingRuntime.status === 'disabled' ? 'not_configured' : 'degraded',
+          },
+        };
+      } catch {
+        effectiveSnapshot = {
+          ...snapshot,
+          status: snapshot.status === 'ok' ? 'degraded' : snapshot.status,
+          recordings: { ...snapshot.recordings, status: 'degraded', error: 'recording_runtime_health_unavailable' },
+        };
+      }
+    }
     if (dependencies.audioRuntime) {
       const audioHealth = await dependencies.audioRuntime.health();
       const quota = dependencies.audioQuota ? await dependencies.audioQuota.snapshot() : undefined;
       return reply.send({
-        ...snapshot,
+        ...effectiveSnapshot,
         audio: {
-          ...snapshot.audio,
+          ...effectiveSnapshot.audio,
           source: audioHealth.processingLocation === 'cloud' ? 'Groq cloud + Piper CPU' : 'Faster-Whisper CPU + Piper CPU',
           stt: audioHealth,
           tts: { provider: 'piper', model: 'pt_BR-jeff-medium' },
@@ -276,7 +326,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         },
       });
     }
-    return reply.send(snapshot);
+    return reply.send(effectiveSnapshot);
   });
 
   const settingsPayload = async (): Promise<Record<string, unknown>> => {
@@ -376,7 +426,46 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     });
   });
 
-  const findEventById = async (id: string) => (await events.search(id, 100)).find((event) => event.id === id);
+  const findEventById = async (id: string) => (
+    await events.findById?.(id)
+    ?? (await events.search(id, 100)).find((event) => event.id === id)
+  );
+
+  const findIndexedEvidence = async (id: string) => {
+    if (!dependencies.evidenceIndex) return undefined;
+    return dependencies.evidenceIndex.findEvidenceById(id);
+  };
+
+  const evidenceFromEvent = (event: Awaited<ReturnType<typeof findEventById>>): MediaEvidence | undefined => (
+    event ? mediaEvidenceFromEvent(event) : undefined
+  );
+
+  const canonicalObservations = async (
+    evidence: MediaEvidence,
+    candidates?: Awaited<ReturnType<typeof events.query>>,
+  ): Promise<EvidenceObservation[]> => {
+    const byEventId = new Map<string, EvidenceObservation>();
+    if (dependencies.evidenceIndex) {
+      for (const observation of await dependencies.evidenceIndex.listObservations(evidence.id)) {
+        byEventId.set(observation.eventId, observation);
+      }
+    }
+    const canonical = candidates ?? await events.search(evidence.id, 100_000);
+    for (const event of canonical) {
+      const observation = observationFromHomeEvent(event);
+      if (observation?.evidenceId === evidence.id) byEventId.set(observation.eventId, observation);
+    }
+    return [...byEventId.values()].sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp) || left.id.localeCompare(right.id));
+  };
+
+  const unsafeImageReference = (reference: string): boolean => {
+    const normalized = reference.replaceAll('\\', '/');
+    return /^data:/i.test(normalized)
+      || isAbsolute(reference)
+      || normalized.split('/').some((part) => part === '..');
+  };
+
+  const validImageMime = (mimeType: string): boolean => ['image/jpeg', 'image/png'].includes(mimeType.toLowerCase());
 
   app.get('/events/:id', async (request, reply) => {
     const parsed = z.object({ id: z.string().min(1) }).safeParse(request.params);
@@ -390,11 +479,49 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     const parsed = z.object({ id: z.string().min(1) }).safeParse(request.params);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_evidence_id', issues: parsed.error.issues });
     const event = await findEventById(parsed.data.id);
-    if (!event) return reply.code(404).send({ error: 'evidence_not_found' });
-    if (event.type !== 'camera.snapshot' && !event.data.imageRef) {
-      return reply.code(404).send({ error: 'evidence_not_found' });
+    const evidence = await findIndexedEvidence(parsed.data.id) ?? evidenceFromEvent(event);
+    if (!event && !evidence) return reply.code(404).send({ error: 'evidence_not_found' });
+    if (!evidence) return reply.code(404).send({ error: 'evidence_not_found' });
+    const observations = await canonicalObservations(evidence);
+    return reply.send({
+      ...(event ? { ...event, data: sanitizeAuditValue(event.data) } : { id: evidence.id }),
+      id: evidence.id,
+      evidence,
+      observations,
+      ...(evidence.recordingSegmentId ? {
+        recording: dependencies.recordings
+          ? await dependencies.recordings.findById(evidence.recordingSegmentId)
+          : null,
+        clipUrl: `/recordings/${encodeURIComponent(evidence.recordingSegmentId)}/clip`,
+      } : {}),
+      imageUrl: `/evidence/${encodeURIComponent(evidence.id)}/image`,
+      ...(event ? { event: { ...event, data: sanitizeAuditValue(event.data) } } : {}),
+    });
+  });
+
+  app.get('/evidence/:id/image', async (request, reply) => {
+    const parsed = z.object({ id: z.string().min(1) }).safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_evidence_id', issues: parsed.error.issues });
+    const event = await findEventById(parsed.data.id);
+    const evidence = await findIndexedEvidence(parsed.data.id) ?? evidenceFromEvent(event);
+    if (!evidence) return reply.code(404).send({ error: 'evidence_not_found' });
+    if (unsafeImageReference(evidence.imageRef) || !validImageMime(evidence.mimeType)) {
+      return reply.code(400).send({ error: 'invalid_evidence_image_ref' });
     }
-    return reply.send({ ...event, data: sanitizeAuditValue(event.data) });
+    try {
+      // LocalSnapshotStore validates that the reference remains within the
+      // configured snapshot root before any bytes are read.
+      const image = await snapshotStore.read(evidence.imageRef);
+      return reply
+        .header('cache-control', 'private, max-age=60')
+        .type(evidence.mimeType.toLowerCase())
+        .send(image);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('escapes')) {
+        return reply.code(400).send({ error: 'invalid_evidence_image_ref' });
+      }
+      return reply.code(404).send({ error: 'evidence_image_not_found' });
+    }
   });
 
   app.post('/events', async (request, reply) => {
@@ -406,7 +533,7 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
       });
     }
 
-    const event = await events.append(parsed.data);
+    const event = await eventStore.append(parsed.data);
     worldState.apply(event);
     if (dependencies.personNotifier) {
       try {
@@ -456,7 +583,14 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         issues: parsed.error.issues,
       });
     }
-    return reply.send(await timeline.query(parsed.data));
+    try {
+      return reply.send(await timeline.query(parsed.data));
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Timeline cursor is invalid') {
+        return reply.code(400).send({ error: 'invalid_timeline_cursor' });
+      }
+      throw error;
+    }
   });
 
   app.get('/tags', async (request, reply) => {
@@ -658,8 +792,54 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
         issues: parsed.error.issues,
       });
     }
-    const recordings = await dependencies.recordings.list(parsed.data);
+    const requestedLimit = parsed.data.limit;
+    let recordings = await dependencies.recordings.list({
+      ...parsed.data,
+      overlap: true,
+      limit: parsed.data.objectClass || parsed.data.ocrQuery ? 10_000 : requestedLimit,
+    });
+    if (parsed.data.objectClass || parsed.data.ocrQuery) {
+      const matchingSegments = await matchingRecordingIds(events, dependencies.evidenceIndex, parsed.data);
+      recordings = recordings.filter((recording) => matchingSegments.has(recording.id));
+    }
+    recordings = recordings.slice(-requestedLimit);
     return reply.send({ recordings });
+  });
+
+  app.get('/recordings/:id/evidence', async (request, reply) => {
+    if (!dependencies.recordings) return reply.code(501).send({ error: 'recording_catalog_unavailable' });
+    const parsed = z.object({ id: z.string().min(1) }).safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_recording_id', issues: parsed.error.issues });
+    const recording = await dependencies.recordings.findById(parsed.data.id);
+    if (!recording) return reply.code(404).send({ error: 'recording_not_found' });
+    if (dependencies.evidenceIndex) {
+      const canonicalEvents = await events.query({ from: recording.startedAt, to: recording.endedAt, limit: 100_000 });
+      const indexed = await dependencies.evidenceIndex.listEvidence({ recordingSegmentId: recording.id, limit: 10_000 });
+      const evidenceById = new Map(indexed.map((item) => [item.id, item]));
+      for (const event of canonicalEvents) {
+        const item = evidenceFromEvent(event);
+        if (item?.recordingSegmentId === recording.id) evidenceById.set(item.id, item);
+      }
+      const evidence = [...evidenceById.values()].sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp) || left.id.localeCompare(right.id));
+      const items = await Promise.all(evidence.map(async (item) => ({
+        evidence: item,
+        observations: await canonicalObservations(item, canonicalEvents),
+        imageUrl: `/evidence/${encodeURIComponent(item.id)}/image`,
+        clipUrl: `/recordings/${encodeURIComponent(recording.id)}/clip`,
+      })));
+      return reply.send({ count: items.length, evidence: items });
+    }
+    const related = (await events.query({ from: recording.startedAt, to: recording.endedAt, limit: 10_000 }))
+      .filter((event) => event.type === 'camera.snapshot' && event.data.recordingSegmentId === recording.id);
+    return reply.send({
+      count: related.length,
+      evidence: related.map((event) => ({
+        id: event.id,
+        event,
+        imageUrl: `/evidence/${encodeURIComponent(event.id)}/image`,
+        clipUrl: `/recordings/${encodeURIComponent(recording.id)}/clip`,
+      })),
+    });
   });
 
   app.get('/recordings/:id/clip', async (request, reply) => {
@@ -682,13 +862,60 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     try {
       filePath = resolveRecordingFile(dependencies.recordingsDirectory, recording.fileRef);
       await access(filePath);
+      const rootPath = await realpath(resolve(dependencies.recordingsDirectory));
+      const actualPath = await realpath(filePath);
+      const relativePath = relative(rootPath, actualPath);
+      if (relativePath.startsWith('..') || isAbsolute(relativePath) || relativePath.split(sep).includes('..') || relativePath === '') {
+        throw new Error('Recording file reference escapes archive root');
+      }
+      filePath = actualPath;
     } catch (error) {
       if (error instanceof Error && error.message === 'Recording file reference escapes archive root') {
         return reply.code(400).send({ error: 'invalid_recording_file_ref' });
       }
       return reply.code(404).send({ error: 'recording_file_not_found' });
     }
-    return reply.type(recording.mimeType).send(createReadStream(filePath));
+    let details;
+    try {
+      details = await statFile(filePath);
+      if (!details.isFile()) return reply.code(404).send({ error: 'recording_file_not_found' });
+    } catch {
+      return reply.code(404).send({ error: 'recording_file_not_found' });
+    }
+    const fileSize = details.size;
+    const rangeHeader = request.headers.range;
+    if (!rangeHeader) {
+      return reply
+        .header('accept-ranges', 'bytes')
+        .header('content-length', fileSize)
+        .type(recording.mimeType)
+        .send(createReadStream(filePath));
+    }
+    const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+    if (!match) return reply.code(416).header('content-range', `bytes */${fileSize}`).send();
+    const requestedStart = match[1] ? Number(match[1]) : undefined;
+    const requestedEnd = match[2] ? Number(match[2]) : undefined;
+    let start: number;
+    let end: number;
+    if (requestedStart === undefined) {
+      if (requestedEnd === undefined || requestedEnd <= 0) return reply.code(416).header('content-range', `bytes */${fileSize}`).send();
+      start = Math.max(0, fileSize - requestedEnd);
+      end = fileSize - 1;
+    } else {
+      start = requestedStart;
+      end = requestedEnd === undefined ? fileSize - 1 : requestedEnd;
+    }
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= fileSize) {
+      return reply.code(416).header('content-range', `bytes */${fileSize}`).send();
+    }
+    end = Math.min(end, fileSize - 1);
+    return reply
+      .code(206)
+      .header('accept-ranges', 'bytes')
+      .header('content-range', `bytes ${start}-${end}/${fileSize}`)
+      .header('content-length', end - start + 1)
+      .type(recording.mimeType)
+      .send(createReadStream(filePath, { start, end }));
   });
 
   app.get('/recordings/:id', async (request, reply) => {
@@ -707,7 +934,26 @@ export function buildApp(dependencies: AppDependencies = {}): FastifyInstance {
     }
     const recording = await dependencies.recordings.findById(parsed.data.id);
     if (!recording) return reply.code(404).send({ error: 'recording_not_found' });
-    return reply.send(recording);
+    if (!dependencies.indexRuns && !dependencies.evidenceIndex) return reply.send(recording);
+    const indexRun = dependencies.indexRuns
+      ? await dependencies.indexRuns.findLatestBySegment(recording.id)
+      : undefined;
+    const evidenceCount = dependencies.evidenceIndex
+      ? await dependencies.evidenceIndex.countEvidenceByRecording(recording.id)
+      : undefined;
+    return reply.send({
+      ...recording,
+      indexing: {
+        status: indexRun?.status ?? 'not_indexed',
+        attempts: indexRun?.attempts ?? 0,
+        framesProcessed: indexRun?.framesProcessed ?? 0,
+        evidenceCount: evidenceCount ?? indexRun?.evidenceCount ?? 0,
+        objectCount: indexRun?.objectCount ?? 0,
+        ocrCount: indexRun?.ocrCount ?? 0,
+        ...(indexRun?.error ? { error: indexRun.error } : {}),
+        ...(indexRun?.updatedAt ? { updatedAt: indexRun.updatedAt } : {}),
+      },
+    });
   });
 
   app.get('/cameras/:camera/live-video', async (request, reply) => {

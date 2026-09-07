@@ -14,6 +14,9 @@ import { appendAudit, sanitizeAuditValue } from '../audit/audit-utils.js';
 import { inspectDetectorStatus, parseDetectorStatusOptions } from '../vision/run-detector-status.js';
 import type { RecordingStore } from '../recordings/recording-store.js';
 import { TimelineService } from '../timeline/timeline-service.js';
+import { type EvidenceIndexStore } from '../evidence/evidence-index-store.js';
+import type { RecordingIndexRunStore } from '../recordings/recording-index-run-store.js';
+import { matchingRecordingIds } from '../recordings/recording-query.js';
 
 export interface RegisteredTool {
   definition: ToolDefinition;
@@ -152,6 +155,8 @@ export function createDefaultToolRegistry(
     cameraLocations?: Record<string, string>;
     detectorStatus?: () => Promise<unknown>;
     recordings?: RecordingStore;
+    evidenceIndex?: EvidenceIndexStore;
+    indexRuns?: RecordingIndexRunStore;
   },
 ): ToolRegistry {
   const registry = new ToolRegistry(new PolicyEngine(), dependencies.audit);
@@ -164,7 +169,10 @@ export function createDefaultToolRegistry(
       return { available: false, reason: 'detector_status_unavailable' };
     }
   });
-  const timeline = new TimelineService(dependencies.events, dependencies.recordings);
+  const timeline = new TimelineService(dependencies.events, dependencies.recordings, {
+    evidenceIndex: dependencies.evidenceIndex,
+    indexRuns: dependencies.indexRuns,
+  });
 
   registry.register({
     definition: {
@@ -382,6 +390,8 @@ export function createDefaultToolRegistry(
           camera: { type: 'string', description: 'Câmera lógica.' },
           from: { type: 'string', description: 'Início inclusivo em ISO 8601 com timezone.' },
           to: { type: 'string', description: 'Fim inclusivo em ISO 8601 com timezone.' },
+          objectClass: { type: 'string', description: 'Classe de objeto presente na evidência.' },
+          ocrQuery: { type: 'string', description: 'Texto OCR normalizado ou termo parcial.' },
           limit: { type: 'integer', minimum: 1, maximum: 100 },
         },
         additionalProperties: false,
@@ -391,20 +401,29 @@ export function createDefaultToolRegistry(
       camera: z.string().min(1).optional(),
       from: z.string().datetime({ offset: true }).optional(),
       to: z.string().datetime({ offset: true }).optional(),
+      objectClass: z.string().min(1).optional(),
+      ocrQuery: z.string().min(1).optional(),
       limit: z.number().int().min(1).max(100).optional(),
     }).refine(
-      (value) => Boolean(value.camera || value.from || value.to),
+      (value) => Boolean(value.camera || value.from || value.to || value.objectClass || value.ocrQuery),
       { message: 'search_recordings requires at least one filter' },
     ),
     execute: async (input) => {
       if (!dependencies.recordings) return { available: false, count: 0, recordings: [] };
-      const query = input as { camera?: string; from?: string; to?: string; limit?: number };
-      const recordings = await dependencies.recordings.list({
+      const query = input as { camera?: string; from?: string; to?: string; objectClass?: string; ocrQuery?: string; limit?: number };
+      const requestedLimit = query.limit ?? 20;
+      let recordings = await dependencies.recordings.list({
         camera: query.camera,
         from: query.from,
         to: query.to,
-        limit: query.limit ?? 20,
+        overlap: true,
+        limit: query.objectClass || query.ocrQuery ? 10_000 : requestedLimit,
       });
+      if (query.objectClass || query.ocrQuery) {
+        const ids = await matchingRecordingIds(dependencies.events, dependencies.evidenceIndex, query);
+        recordings = recordings.filter((recording) => ids.has(recording.id));
+      }
+      recordings = recordings.slice(-requestedLimit);
       return { available: true, count: recordings.length, recordings };
     },
   });
@@ -424,9 +443,56 @@ export function createDefaultToolRegistry(
     input: z.object({ id: z.string().min(1) }),
     execute: async (input) => {
       if (!dependencies.recordings) return { available: false, recording: null };
+      const recording = await dependencies.recordings.findById(input.id as string) ?? null;
+      if (!recording) return { available: true, recording: null };
+      const indexRun = dependencies.indexRuns ? await dependencies.indexRuns.findLatestBySegment(recording.id) : undefined;
+      const evidenceCount = dependencies.evidenceIndex
+        ? await dependencies.evidenceIndex.countEvidenceByRecording(recording.id)
+        : undefined;
       return {
         available: true,
-        recording: await dependencies.recordings.findById(input.id as string) ?? null,
+        recording,
+        indexing: {
+          status: indexRun?.status ?? 'not_indexed',
+          attempts: indexRun?.attempts ?? 0,
+          evidenceCount: evidenceCount ?? indexRun?.evidenceCount ?? 0,
+          framesProcessed: indexRun?.framesProcessed ?? 0,
+          objectCount: indexRun?.objectCount ?? 0,
+          ocrCount: indexRun?.ocrCount ?? 0,
+          ...(indexRun?.error ? { error: indexRun.error } : {}),
+        },
+      };
+    },
+  });
+
+  registry.register({
+    definition: {
+      name: 'get_evidence',
+      description: 'Retorna uma evidência de câmera, suas observações e referência segura de mídia. Nunca carrega base64 no prompt.',
+      risk: 'read',
+      parameters: {
+        type: 'object',
+        properties: { id: { type: 'string', description: 'ID da evidência/frame.' } },
+        required: ['id'],
+        additionalProperties: false,
+      },
+    },
+    input: z.object({ id: z.string().min(1) }),
+    execute: async (input) => {
+      if (!dependencies.evidenceIndex) return { available: false, evidence: null, observations: [] };
+      const evidence = await dependencies.evidenceIndex.findEvidenceById(input.id as string);
+      if (!evidence) return { available: true, evidence: null, observations: [] };
+      return {
+        available: true,
+        evidence: {
+          ...evidence,
+          imageUrl: `/evidence/${encodeURIComponent(evidence.id)}/image`,
+          ...(evidence.recordingSegmentId ? { clipUrl: `/recordings/${encodeURIComponent(evidence.recordingSegmentId)}/clip` } : {}),
+        },
+        observations: await dependencies.evidenceIndex.listObservations(evidence.id),
+        ...(evidence.recordingSegmentId && dependencies.recordings
+          ? { recording: await dependencies.recordings.findById(evidence.recordingSegmentId) ?? null }
+          : {}),
       };
     },
   });
@@ -442,6 +508,11 @@ export function createDefaultToolRegistry(
           camera: { type: 'string', description: 'Câmera lógica.' },
           from: { type: 'string', description: 'Início inclusivo em ISO 8601 com timezone.' },
           to: { type: 'string', description: 'Fim inclusivo em ISO 8601 com timezone.' },
+          eventType: { type: 'string', description: 'Tipo de evento ou camera.snapshot.' },
+          objectClass: { type: 'string', description: 'Classe de objeto observada.' },
+          ocrQuery: { type: 'string', description: 'Texto OCR parcial.' },
+          evidenceOnly: { type: 'boolean', description: 'Retorna apenas frames com evidência.' },
+          cursor: { type: 'string', description: 'Cursor opaco retornado pela página anterior.' },
           limit: { type: 'integer', minimum: 1, maximum: 200 },
         },
         additionalProperties: false,
@@ -451,12 +522,22 @@ export function createDefaultToolRegistry(
       camera: z.string().min(1).optional(),
       from: z.string().datetime({ offset: true }).optional(),
       to: z.string().datetime({ offset: true }).optional(),
+      eventType: z.string().min(1).optional(),
+      objectClass: z.string().min(1).optional(),
+      ocrQuery: z.string().min(1).optional(),
+      evidenceOnly: z.boolean().optional(),
+      cursor: z.string().min(1).optional(),
       limit: z.number().int().min(1).max(200).optional(),
     }),
     execute: async (input) => timeline.query(input as {
       camera?: string;
       from?: string;
       to?: string;
+      eventType?: string;
+      objectClass?: string;
+      ocrQuery?: string;
+      evidenceOnly?: boolean;
+      cursor?: string;
       limit?: number;
     }),
   });

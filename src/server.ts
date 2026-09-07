@@ -1,4 +1,7 @@
 import { access } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { buildApp } from './app.js';
@@ -13,6 +16,17 @@ import {
 import { InMemoryEventStore } from './events/in-memory-event-store.js';
 import { PostgresEventStore } from './events/postgres-event-store.js';
 import { InMemoryRecordingStore, PostgresRecordingStore } from './recordings/recording-store.js';
+import { FfmpegSegmentRecorder, RecordingManager } from './recordings/ffmpeg-recorder.js';
+import { FfmpegRecordingFrameSource } from './recordings/recording-frame-extractor.js';
+import { getRecordingProfile } from './recordings/recording-profile.js';
+import { RecordingIndexer } from './recordings/recording-indexer.js';
+import { RecordingRuntime, type RecordingRuntimeHealth } from './recordings/recording-runtime.js';
+import { InMemoryRecordingIndexRunStore, PostgresRecordingIndexRunStore } from './recordings/recording-index-run-store.js';
+import { OnnxObjectInference } from './vision/onnx-person-detector.js';
+import { PersistentRapidOcrEngine, parseOcrExcludedRegions, resolveOcrPythonPath } from './vision/ocr-engine.js';
+import { parseObjectDetectorOptions } from './vision/run-object-detector.js';
+import { EvidenceEventProjection, ProjectingEventAppender } from './evidence/event-projection.js';
+import { InMemoryEvidenceIndexStore, PostgresEvidenceIndexStore } from './evidence/evidence-index-store.js';
 import { InMemoryAudioSessionStore, PostgresAudioSessionStore } from './audio/audio-session-store.js';
 import { AudioSessionRetentionService } from './audio/audio-session-retention.js';
 import { AudioSessionRetentionScheduler } from './audio/audio-session-retention-scheduler.js';
@@ -47,25 +61,33 @@ import type { HomeEvent } from './events/schema.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '127.0.0.1';
-const persistentStore = process.env.DATABASE_URL ? new PostgresEventStore() : undefined;
-const persistentAudit = process.env.DATABASE_URL ? new PostgresAuditStore() : undefined;
-const persistentRecordings = process.env.DATABASE_URL ? new PostgresRecordingStore() : undefined;
-const events = persistentStore ?? new InMemoryEventStore();
-const audit = persistentAudit ?? new InMemoryAuditStore();
-const recordings = persistentRecordings ?? new InMemoryRecordingStore();
-const persistentAudio = process.env.DATABASE_URL ? new PostgresAudioSessionStore() : undefined;
-const audioSessions = persistentAudio ?? new InMemoryAudioSessionStore();
-const persistentRuntimeSettings = process.env.DATABASE_URL ? new PostgresRuntimeSettingsStore() : undefined;
-const runtimeSettingsStore = persistentRuntimeSettings ?? new InMemoryRuntimeSettingsStore();
-const runtimeSettings = new RuntimeSettingsService(runtimeSettingsStore, runtimeSettingsFromEnvironment(), 'environment');
-const persistentSttUsage = process.env.DATABASE_URL ? new PostgresSttUsageStore() : undefined;
-const sttUsageStore = persistentSttUsage ?? new InMemorySttUsageStore();
-const audioSessionRetention = new AudioSessionRetentionService(audioSessions, audit);
+const postgresConfigured = Boolean(process.env.DATABASE_URL?.trim());
+const persistentStore = postgresConfigured ? new PostgresEventStore() : undefined;
+const persistentAudit = postgresConfigured ? new PostgresAuditStore() : undefined;
+const persistentRecordings = postgresConfigured ? new PostgresRecordingStore() : undefined;
+let events = persistentStore ?? new InMemoryEventStore();
+let audit = persistentAudit ?? new InMemoryAuditStore();
+let recordings = persistentRecordings ?? new InMemoryRecordingStore();
+const persistentEvidenceIndex = postgresConfigured ? new PostgresEvidenceIndexStore() : undefined;
+let evidenceIndex = persistentEvidenceIndex ?? new InMemoryEvidenceIndexStore();
+const persistentIndexRuns = postgresConfigured ? new PostgresRecordingIndexRunStore() : undefined;
+let indexRuns = persistentIndexRuns ?? new InMemoryRecordingIndexRunStore();
+let evidenceProjection: EvidenceEventProjection;
+const persistentAudio = postgresConfigured ? new PostgresAudioSessionStore() : undefined;
+let audioSessions = persistentAudio ?? new InMemoryAudioSessionStore();
+const persistentRuntimeSettings = postgresConfigured ? new PostgresRuntimeSettingsStore() : undefined;
+let runtimeSettingsStore = persistentRuntimeSettings ?? new InMemoryRuntimeSettingsStore();
+const persistentSttUsage = postgresConfigured ? new PostgresSttUsageStore() : undefined;
+let sttUsageStore = persistentSttUsage ?? new InMemorySttUsageStore();
+let audioSessionRetention: AudioSessionRetentionService;
 const importance = new InMemoryImportanceStore();
 const watchSessions = new InMemoryWatchSessionStore();
 const actions = new InMemoryActionProposalStore();
 const worldState = new WorldStateProjection();
 const snapshotStore = new LocalSnapshotStore(process.env.JARVIS_SNAPSHOT_DIR ?? 'data/snapshots');
+const execFileAsync = promisify(execFile);
+let databaseAvailable = false;
+let persistentStoresClosed = false;
 
 function hermesProfileHome(): string {
   return process.env.HERMES_HOME
@@ -81,27 +103,58 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-if (persistentStore) {
-  await persistentStore.initialize();
-  const history = await persistentStore.list(10000);
-  for (const event of history) worldState.apply(event);
-  console.log(`World State reidratado com ${history.length} evento(s)`);
+async function closePersistentStores(): Promise<void> {
+  if (persistentStoresClosed) return;
+  persistentStoresClosed = true;
+  await Promise.allSettled([
+    persistentStore?.close(),
+    persistentAudit?.close(),
+    persistentRecordings?.close(),
+    persistentEvidenceIndex?.close(),
+    persistentIndexRuns?.close(),
+    persistentAudio?.close(),
+    persistentRuntimeSettings?.close(),
+    persistentSttUsage?.close(),
+  ]);
 }
-if (persistentAudit) {
-  await persistentAudit.initialize();
+
+if (postgresConfigured) {
+  try {
+    await persistentStore!.initialize();
+    await persistentAudit!.initialize();
+    await persistentRecordings!.initialize();
+    await persistentEvidenceIndex!.initialize();
+    await persistentIndexRuns!.initialize();
+    await persistentAudio!.initialize();
+    await persistentRuntimeSettings!.initialize();
+    await persistentSttUsage!.initialize();
+    const history = await persistentStore!.list(10000);
+    for (const event of history) worldState.apply(event);
+    console.log(`World State reidratado com ${history.length} evento(s)`);
+    databaseAvailable = true;
+  } catch (error) {
+    databaseAvailable = false;
+    console.error('PostgreSQL indisponível; Core continuará degradado:', error instanceof Error ? error.message.slice(0, 200) : 'database initialization failed');
+    await closePersistentStores();
+    events = new InMemoryEventStore();
+    audit = new InMemoryAuditStore();
+    recordings = new InMemoryRecordingStore();
+    evidenceIndex = new InMemoryEvidenceIndexStore();
+    indexRuns = new InMemoryRecordingIndexRunStore();
+    audioSessions = new InMemoryAudioSessionStore();
+    runtimeSettingsStore = new InMemoryRuntimeSettingsStore();
+    sttUsageStore = new InMemorySttUsageStore();
+  }
 }
-if (persistentRecordings) {
-  await persistentRecordings.initialize();
-}
-if (persistentAudio) {
-  await persistentAudio.initialize();
-}
-if (persistentRuntimeSettings) {
-  await persistentRuntimeSettings.initialize();
-}
-if (persistentSttUsage) {
-  await persistentSttUsage.initialize();
-}
+
+// Construct this service only after the guarded PostgreSQL initialization. If
+// initialization failed, it must use the fresh in-memory store rather than a
+// pool that was already closed during fallback.
+const runtimeSettings = new RuntimeSettingsService(runtimeSettingsStore, runtimeSettingsFromEnvironment(), 'environment');
+audioSessionRetention = new AudioSessionRetentionService(audioSessions, audit);
+evidenceProjection = new EvidenceEventProjection(evidenceIndex, {
+  onError: (error) => console.error('Evidence projection failed:', error instanceof Error ? error.message : error),
+});
 
 const driveTokenPath = join(hermesProfileHome(), 'google_token.json');
 const webRootDirectory = join(process.cwd(), 'dist', 'web');
@@ -171,9 +224,15 @@ const driveBackup = await fileExists(driveTokenPath)
     parentFolderId: process.env.JARVIS_DRIVE_PARENT_FOLDER_ID || undefined,
   })
   : undefined;
+const snapshotRetentionBackup = process.env.JARVIS_SNAPSHOT_RETENTION_BACKUP_ENABLED === 'true'
+  ? driveBackup
+  : undefined;
 const retentionService = new SnapshotRetentionService(snapshotStore, {
   maxAgeDays: 7,
-  backup: driveBackup,
+  backup: snapshotRetentionBackup,
+  // Recording evidence is governed by the segment retention tier, not the
+  // general camera-snapshot cleanup policy.
+  excludePrefixes: ['recordings/', 'index-tmp/'],
 });
 const retentionScheduler = new SnapshotRetentionScheduler(retentionService, {
   onResult: (result) => {
@@ -190,11 +249,134 @@ const retentionScheduler = new SnapshotRetentionScheduler(retentionService, {
 });
 
 const recordingDirectory = process.env.JARVIS_RECORDING_OUTPUT_DIR ?? 'data/recordings';
+const recordingProfile = getRecordingProfile('continuous-economic');
+const recordingCamera = 'front';
+const recordingStreamUrl = process.env.JARVIS_CAMERA_FRONT_RTSP_URL?.trim();
+const recordingIndexIntervalMs = Number(process.env.JARVIS_RECORDING_INDEX_INTERVAL_MS ?? 1_000);
+const recordingModelPath = resolve(process.env.JARVIS_ONNX_MODEL_PATH?.trim() || 'models/yolo11n.onnx');
+const recordingOcrWorkerPath = resolve(process.env.JARVIS_OCR_WORKER?.trim() || 'tools/ocr/rapidocr_worker.py');
+const recordingOcrPythonPath = resolveOcrPythonPath();
+const recordingPolicyVersion = 'continuous-v1';
+
+async function commandAvailable(command: string): Promise<boolean> {
+  if (command.includes('\\') || command.includes('/')) return fileExists(command);
+  try {
+    await execFileAsync(process.platform === 'win32' ? 'where.exe' : 'which', [command], { windowsHide: true, timeout: 2_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function continuousDependencyFailure(): Promise<string | undefined> {
+  if (!databaseAvailable || !persistentRecordings || !persistentEvidenceIndex || !persistentIndexRuns) return 'postgres_required';
+  if (!recordingStreamUrl) return 'front_camera_rtsp_not_configured';
+  if (!await fileExists(recordingModelPath)) return 'onnx_model_unavailable';
+  if (!await fileExists(recordingOcrWorkerPath)) return 'rapidocr_worker_unavailable';
+  if (!await commandAvailable(process.env.FFMPEG_PATH?.trim() || 'ffmpeg')) return 'ffmpeg_unavailable';
+  if (!await commandAvailable(recordingOcrPythonPath)) return 'rapidocr_python_unavailable';
+  if (!Number.isInteger(recordingIndexIntervalMs) || recordingIndexIntervalMs <= 0) return 'invalid_recording_index_interval';
+  return undefined;
+}
+
+const evidenceBackfill = await evidenceProjection.backfill(events, recordings);
+const recordingBackfillStatus = {
+  status: evidenceBackfill.status === 'failed' ? 'failed' as const : evidenceBackfill.status === 'completed' ? 'completed' as const : 'skipped' as const,
+  eventsProcessed: evidenceBackfill.eventsProcessed,
+  segmentsSeen: evidenceBackfill.segmentsSeen,
+  ...(evidenceBackfill.error ? { error: evidenceBackfill.error } : {}),
+};
+
+let recordingRuntime: RecordingRuntime | undefined;
+let persistentOcrEngine: PersistentRapidOcrEngine | undefined;
+let recordingRuntimeReason: string | undefined;
+const continuousFailure = evidenceBackfill.status === 'failed'
+  ? 'evidence_backfill_failed'
+  : await continuousDependencyFailure();
+if (!continuousFailure && recordingStreamUrl) {
+  try {
+    const objectOptions = parseObjectDetectorOptions([]);
+    const ocrExcludedRegions = parseOcrExcludedRegions(process.env.JARVIS_OCR_EXCLUDED_REGIONS)?.[recordingCamera];
+    const ocr = new PersistentRapidOcrEngine({
+      pythonPath: recordingOcrPythonPath,
+      workerPath: recordingOcrWorkerPath,
+      excludedRegions: ocrExcludedRegions,
+    });
+    persistentOcrEngine = ocr;
+    ocr.start();
+    const recorder = new FfmpegSegmentRecorder({
+      outputDirectory: recordingDirectory,
+      transport: (process.env.JARVIS_RTSP_TRANSPORT as 'udp' | 'tcp' | undefined) ?? 'udp',
+      profile: recordingProfile,
+    });
+    const manager = new RecordingManager(recorder, recordings);
+    const objectInference = new OnnxObjectInference({
+      modelPath: recordingModelPath,
+      inputSize: objectOptions.inputSize,
+      confidenceThreshold: objectOptions.confidenceThreshold,
+      targetClasses: objectOptions.classes,
+    });
+    const indexer = new RecordingIndexer({
+      events: new ProjectingEventAppender(events, evidenceProjection, (error) => console.error('Continuous evidence projection failed:', error instanceof Error ? error.message : error)),
+      frames: new FfmpegRecordingFrameSource({
+        recordingsDirectory: recordingDirectory,
+        snapshotsDirectory: process.env.JARVIS_SNAPSHOT_DIR ?? 'data/snapshots',
+        intervalMs: recordingIndexIntervalMs,
+        ffmpegPath: process.env.FFMPEG_PATH,
+      }),
+      objects: objectInference,
+      ocr,
+      model: process.env.JARVIS_ONNX_MODEL_PATH?.trim() || 'yolo11n.onnx',
+      ocrModel: 'rapidocr-onnxruntime',
+      provider: 'CPUExecutionProvider',
+      policyVersion: recordingPolicyVersion,
+      continuous: true,
+      objectMinConfidence: objectOptions.confidenceThreshold,
+      ocrMinConfidence: 0.60,
+      ocrDedupWindowMs: 30_000,
+      confirmObjects: true,
+      confirmationFrames: 2,
+      confirmationWindowMs: 5_000,
+      promoteSegment: async (segmentId) => { await recordings.promoteToEvent?.(segmentId); },
+    });
+    recordingRuntime = new RecordingRuntime({
+      camera: recordingCamera,
+      streamUrl: recordingStreamUrl,
+      manager,
+      recordings,
+      indexer,
+      indexRuns,
+      model: process.env.JARVIS_ONNX_MODEL_PATH?.trim() || 'yolo11n.onnx',
+      ocrModel: 'rapidocr-onnxruntime',
+      policyVersion: recordingPolicyVersion,
+      segmentDurationMs: recordingProfile.segmentDurationMs,
+      intervalMs: recordingIndexIntervalMs,
+      includeOcr: true,
+      maxPendingSegments: 2,
+      maxAttempts: 3,
+      retryBackoffMs: Number(process.env.JARVIS_RECORDING_INDEX_RETRY_BACKOFF_MS ?? 1_000),
+      backfill: recordingBackfillStatus,
+      retention: {
+        continuousDays: Number(process.env.JARVIS_RECORDING_MAX_AGE_DAYS ?? 30),
+        eventDays: Number(process.env.JARVIS_RECORDING_EVENT_MAX_AGE_DAYS ?? 90),
+        maxBytes: Number(process.env.JARVIS_RECORDING_MAX_BYTES ?? 50_000_000_000),
+      },
+      onError: (error) => console.error('Continuous recording/indexing failed:', error instanceof Error ? error.message : error),
+    });
+  } catch (error) {
+    recordingRuntimeReason = error instanceof Error ? error.message.slice(0, 200) : 'continuous_runtime_creation_failed';
+    await persistentOcrEngine?.close();
+    persistentOcrEngine = undefined;
+  }
+} else {
+  recordingRuntimeReason = continuousFailure;
+}
 const recordingRetentionService = new RecordingRetentionService(recordings, recordingDirectory, {
   continuousDays: Number(process.env.JARVIS_RECORDING_MAX_AGE_DAYS ?? 30),
   eventDays: Number(process.env.JARVIS_RECORDING_EVENT_MAX_AGE_DAYS ?? 90),
   maxBytes: Number(process.env.JARVIS_RECORDING_MAX_BYTES ?? 50_000_000_000),
   deleteAfterVerified: process.env.JARVIS_RECORDING_DELETE_LOCAL_AFTER_VERIFY === 'true',
+  evidenceSnapshotsDirectory: process.env.JARVIS_SNAPSHOT_DIR ?? 'data/snapshots',
 });
 const recordingArchiver = driveBackup
   ? new RecordingDriveArchiver(recordings, driveBackup, recordingDirectory)
@@ -241,28 +423,30 @@ const archiveOne = recordingUploadQueue
     if (job?.status !== 'verified') throw new Error(job?.error ?? `Recording upload failed: ${id}`);
   }
   : undefined;
-const recordingRetentionScheduler = recordingBackupEnabled && archiveOne
-  ? new RecordingRetentionScheduler(
-    {
-      run: () => recordingRetentionService.run(archiveOne),
+const recordingRetentionScheduler = new RecordingRetentionScheduler(
+  {
+    // This phase is dry-run by default. The legacy Drive archive path stays
+    // an explicit opt-in and is never selected by the continuous DVR itself.
+    run: () => recordingBackupEnabled && archiveOne
+      ? recordingRetentionService.run(archiveOne)
+      : recordingRetentionService.run(),
+  },
+  {
+    intervalMs: Number(process.env.JARVIS_RECORDING_RETENTION_INTERVAL_MS ?? 6 * 60 * 60 * 1000),
+    onResult: (result) => {
+      if (result.candidates.length > 0 || result.failed > 0) {
+        console.log(
+          `Recording retention${recordingBackupEnabled ? '' : ' dry-run'}: scanned=${result.scanned} candidates=${result.candidates.length} `
+          + `archived=${result.archived} failed=${result.failed} deleted=${result.deleted}`,
+        );
+      }
     },
-    {
-      intervalMs: Number(process.env.JARVIS_RECORDING_RETENTION_INTERVAL_MS ?? 6 * 60 * 60 * 1000),
-      onResult: (result) => {
-        if (result.candidates.length > 0 || result.failed > 0) {
-          console.log(
-            `Recording retention: scanned=${result.scanned} candidates=${result.candidates.length} `
-            + `archived=${result.archived} failed=${result.failed} deleted=${result.deleted}`,
-          );
-        }
-      },
-      onError: (error) => console.error(
-        'Recording retention failed:',
-        error instanceof Error ? error.message : error,
-      ),
-    },
-  )
-  : undefined;
+    onError: (error) => console.error(
+      'Recording retention failed:',
+      error instanceof Error ? error.message : error,
+    ),
+  },
+);
 const tags = new TagService(events);
 if (recordingBackupEnabled && !recordingArchiver) {
   console.error('Recording backup enabled but Google Drive is not authenticated; scheduler not started');
@@ -309,6 +493,30 @@ const audioSessionRetentionScheduler = new AudioSessionRetentionScheduler(
     onError: (error) => console.error('Audio session retention failed:', error instanceof Error ? error.message : error),
   },
 );
+const unavailableRecordingHealth = async (): Promise<RecordingRuntimeHealth> => ({
+  status: 'disabled',
+  mode: 'continuous-economic',
+  camera: recordingCamera,
+  segmentDurationMs: recordingProfile.segmentDurationMs,
+  intervalMs: recordingIndexIntervalMs,
+  recording: {
+    errors: recordingRuntimeReason ? 1 : 0,
+    ...(recordingRuntimeReason ? { lastError: recordingRuntimeReason } : {}),
+  },
+  indexing: {
+    queueLength: 0,
+    maxPending: 2,
+    backpressure: false,
+  },
+  backfill: { ...recordingBackfillStatus },
+  bytesCataloged: 0,
+  retention: {
+    continuousDays: Number(process.env.JARVIS_RECORDING_MAX_AGE_DAYS ?? 30),
+    eventDays: Number(process.env.JARVIS_RECORDING_EVENT_MAX_AGE_DAYS ?? 90),
+    maxBytes: Number(process.env.JARVIS_RECORDING_MAX_BYTES ?? 50_000_000_000),
+    dryRun: true,
+  },
+});
 const app = buildApp({
   events,
   audit,
@@ -317,6 +525,10 @@ const app = buildApp({
   personNotifier,
   recordings,
   recordingsDirectory: process.env.JARVIS_RECORDING_OUTPUT_DIR ?? 'data/recordings',
+  evidenceIndex,
+  indexRuns,
+  evidenceProjection,
+  recordingRuntimeHealth: () => recordingRuntime ? recordingRuntime.health() : unavailableRecordingHealth(),
   tags,
   webRoot,
   audioSessions,
@@ -329,6 +541,7 @@ const app = buildApp({
   importance,
   watchSessions,
   actions,
+  databaseConfigured: databaseAvailable,
 });
 
 const shutdown = async (): Promise<void> => {
@@ -338,13 +551,10 @@ const shutdown = async (): Promise<void> => {
   recordingRemoteRetentionScheduler?.stop();
   audioSessionRetentionScheduler.stop();
   await audioRuntime?.close();
+  await recordingRuntime?.stop();
+  await persistentOcrEngine?.close();
   await app.close();
-  await persistentStore?.close();
-  await persistentAudit?.close();
-  await persistentRecordings?.close();
-  await persistentAudio?.close();
-  await persistentRuntimeSettings?.close();
-  await persistentSttUsage?.close();
+  await closePersistentStores();
 };
 
 process.once('SIGINT', () => {
@@ -357,6 +567,19 @@ process.once('SIGTERM', () => {
 try {
   await app.listen({ port, host });
   retentionScheduler.start();
+  if (recordingRuntime) {
+    try {
+      await recordingRuntime.start();
+      console.log(`Continuous recording runtime started: camera=${recordingCamera} profile=${recordingProfile.name} segmentDurationMs=${recordingProfile.segmentDurationMs}`);
+    } catch (error) {
+      recordingRuntimeReason = error instanceof Error ? error.message.slice(0, 200) : 'continuous_runtime_start_failed';
+      console.error('Continuous recording runtime not started:', recordingRuntimeReason);
+      await recordingRuntime.stop();
+      recordingRuntime = undefined;
+      await persistentOcrEngine?.close();
+      persistentOcrEngine = undefined;
+    }
+  }
   recordingRetentionScheduler?.start();
   recordingArchiveScheduler?.start();
   recordingRemoteRetentionScheduler?.start();
@@ -369,9 +592,8 @@ try {
   recordingArchiveScheduler?.stop();
   recordingRemoteRetentionScheduler?.stop();
   audioSessionRetentionScheduler.stop();
-  await persistentStore?.close();
-  await persistentRuntimeSettings?.close();
-  await persistentSttUsage?.close();
-  await persistentAudit?.close();
+  await recordingRuntime?.stop();
+  await persistentOcrEngine?.close();
+  await closePersistentStores();
   process.exit(1);
 }

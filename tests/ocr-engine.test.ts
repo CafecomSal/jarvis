@@ -1,5 +1,7 @@
+import { EventEmitter } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { RapidOcrEngine, resolveOcrPythonPath } from '../src/vision/ocr-engine.js';
+import { PersistentRapidOcrEngine, type PersistentOcrProcess, RapidOcrEngine, resolveOcrPythonPath } from '../src/vision/ocr-engine.js';
 
 describe('engine OCR', () => {
   it('combina regiões, normaliza texto e preserva caixas/confiança', async () => {
@@ -76,5 +78,51 @@ describe('engine OCR', () => {
   it('prefere o caminho configurado e depois o venv local do OCR', () => {
     expect(resolveOcrPythonPath({ JARVIS_OCR_PYTHON: 'python-custom' }, () => false)).toBe('python-custom');
     expect(resolveOcrPythonPath({}, () => true)).toMatch(/tools[\\/]ocr[\\/]\.venv[\\/]Scripts[\\/]python\.exe$/);
+  });
+
+  it('mantém um worker persistente, serializa frames e encerra limpo', async () => {
+    let spawnCount = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let killed = false;
+    const processLike = new EventEmitter() as unknown as PersistentOcrProcess;
+    const stdout = new PassThrough();
+    const stdin = new Writable({
+      write(chunk, _encoding, callback) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        const request = JSON.parse(String(chunk)) as { imageBase64: string };
+        setTimeout(() => {
+          stdout.write(JSON.stringify({
+            latencyMs: 1,
+            regions: [{ text: request.imageBase64 ? 'Portão' : 'vazio', confidence: 0.9, box: { x1: 1, y1: 1, x2: 10, y2: 10 } }],
+          }) + '\n');
+          inFlight -= 1;
+          callback();
+        }, 1);
+      },
+    });
+    Object.assign(processLike, {
+      stdin,
+      stdout,
+      kill: () => { killed = true; return true; },
+    });
+    const engine = new PersistentRapidOcrEngine({
+      pythonPath: 'python',
+      workerPath: 'worker.py',
+      spawnProcess: () => {
+        spawnCount += 1;
+        return processLike;
+      },
+    });
+
+    engine.start();
+    const results = await Promise.all([engine.recognize(Buffer.from('one')), engine.recognize(Buffer.from('two'))]);
+    await engine.close();
+
+    expect(results.map((result) => result.normalizedText)).toEqual(['PORTAO', 'PORTAO']);
+    expect(spawnCount).toBe(1);
+    expect(maxInFlight).toBe(1);
+    expect(killed).toBe(true);
   });
 });

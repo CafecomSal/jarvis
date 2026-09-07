@@ -50,4 +50,13 @@ describe('API de timeline', () => {
       ],
     });
   });
+
+  it('rejeita cursor opaco inválido sem produzir erro interno', async () => {
+    const app = buildApp({ events: new InMemoryEventStore(), worldState: new WorldStateProjection() });
+    const response = await app.inject({ method: 'GET', url: '/timeline?cursor=not-a-cursor' });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid_timeline_cursor' });
+  });
 });

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { access, mkdir, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { RecordingSegment } from './recording-store.js';
 import { resolveRecordingFile } from './recording-file.js';
 
@@ -17,6 +17,7 @@ export interface RecordingFrame {
   timestampMs: number;
   image: Buffer;
   imageRef: string;
+  temporary?: boolean;
 }
 
 export interface FfmpegRecordingFrameSourceOptions {
@@ -26,6 +27,16 @@ export interface FfmpegRecordingFrameSourceOptions {
   ffmpegPath?: string;
   timeoutMs?: number;
   capture?: FrameCapture;
+}
+
+export interface RecordingFrameExtractOptions {
+  temporary?: boolean;
+}
+
+export interface RecordingFrameSource {
+  extract(segment: RecordingSegment, options?: RecordingFrameExtractOptions): Promise<RecordingFrame[]>;
+  promote?(frame: RecordingFrame): Promise<RecordingFrame>;
+  dispose?(frame: RecordingFrame): Promise<void>;
 }
 
 function defaultCapture(options: FrameCaptureOptions): Promise<Buffer> {
@@ -89,6 +100,17 @@ export class FfmpegRecordingFrameSource {
   private readonly timeoutMs: number;
   private readonly capture: FrameCapture;
 
+  private resolveSnapshotReference(reference: string): string {
+    const normalized = reference.replaceAll('\\', '/');
+    if (!normalized.trim()) throw new Error('Recording frame imageRef must not be empty');
+    const imagePath = resolve(this.snapshotsDirectory, ...normalized.split('/'));
+    const relativePath = relative(this.snapshotsDirectory, imagePath);
+    if (relativePath.startsWith('..') || isAbsolute(relativePath) || relativePath.split(sep).includes('..')) {
+      throw new Error('Recording frame imageRef escapes snapshot root');
+    }
+    return imagePath;
+  }
+
   constructor(options: FfmpegRecordingFrameSourceOptions) {
     this.recordingsDirectory = resolve(options.recordingsDirectory);
     this.snapshotsDirectory = resolve(options.snapshotsDirectory);
@@ -104,26 +126,52 @@ export class FfmpegRecordingFrameSource {
     }
   }
 
-  async extract(segment: RecordingSegment): Promise<RecordingFrame[]> {
+  async extract(segment: RecordingSegment, options: RecordingFrameExtractOptions = {}): Promise<RecordingFrame[]> {
+    if (segment.id.includes('/') || segment.id.includes('\\')) throw new Error('Recording segment id must be a single path component');
     const segmentPath = resolveRecordingFile(this.recordingsDirectory, segment.fileRef);
     await access(segmentPath);
     const frames: RecordingFrame[] = [];
+    const baseDirectory = options.temporary ? 'index-tmp' : 'recordings';
     const lastSafeTimestampMs = Math.max(0, segment.durationMs - Math.min(this.intervalMs, 250));
-    for (let timestampMs = 0; timestampMs <= lastSafeTimestampMs; timestampMs += this.intervalMs) {
-      const image = await this.capture({
-        ffmpegPath: this.ffmpegPath,
-        filePath: segmentPath,
-        timestampMs,
-        timeoutMs: this.timeoutMs,
-      });
-      if (image.length === 0) throw new Error(`Empty frame extracted from segment: ${segment.id}`);
-      const fileName = frameName(timestampMs);
-      const imageRef = `recordings/${segment.id}/${fileName}`;
-      const imagePath = resolve(this.snapshotsDirectory, ...imageRef.split('/'));
-      await mkdir(resolve(this.snapshotsDirectory, 'recordings', segment.id), { recursive: true });
-      await writeFile(imagePath, image, { mode: 0o600 });
-      frames.push({ timestampMs, image, imageRef });
+    try {
+      for (let timestampMs = 0; timestampMs <= lastSafeTimestampMs; timestampMs += this.intervalMs) {
+        const image = await this.capture({
+          ffmpegPath: this.ffmpegPath,
+          filePath: segmentPath,
+          timestampMs,
+          timeoutMs: this.timeoutMs,
+        });
+        if (image.length === 0) throw new Error(`Empty frame extracted from segment: ${segment.id}`);
+        const fileName = frameName(timestampMs);
+        const imageRef = `${baseDirectory}/${segment.id}/${fileName}`;
+        const imagePath = this.resolveSnapshotReference(imageRef);
+        await mkdir(resolve(this.snapshotsDirectory, baseDirectory, segment.id), { recursive: true });
+        await writeFile(imagePath, image, { mode: 0o600 });
+        frames.push({ timestampMs, image, imageRef, ...(options.temporary ? { temporary: true } : {}) });
+      }
+    } catch (error) {
+      if (options.temporary) {
+        await Promise.all(frames.map((frame) => rm(resolve(this.snapshotsDirectory, ...frame.imageRef.split('/')), { force: true })));
+      }
+      throw error;
     }
     return frames;
+  }
+
+  async promote(frame: RecordingFrame): Promise<RecordingFrame> {
+    if (!frame.temporary) return frame;
+    const temporaryPath = this.resolveSnapshotReference(frame.imageRef);
+    const image = await readFile(temporaryPath);
+    const imageRef = `recordings/${frame.imageRef.replace(/^index-tmp\//, '')}`;
+    const destination = this.resolveSnapshotReference(imageRef);
+    await mkdir(resolve(this.snapshotsDirectory, 'recordings', ...imageRef.split('/').slice(1, -1)), { recursive: true });
+    await writeFile(destination, image, { mode: 0o600 });
+    await rm(temporaryPath, { force: true });
+    return { timestampMs: frame.timestampMs, image, imageRef };
+  }
+
+  async dispose(frame: RecordingFrame): Promise<void> {
+    if (!frame.temporary) return;
+    await rm(this.resolveSnapshotReference(frame.imageRef), { force: true });
   }
 }

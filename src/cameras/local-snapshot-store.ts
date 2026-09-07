@@ -1,5 +1,5 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, relative, resolve, sep } from 'node:path';
+import { lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { CameraSnapshot } from './camera-adapter.js';
 
@@ -30,6 +30,7 @@ export interface SnapshotRetentionOptions {
   maxAgeDays?: number;
   backup?: SnapshotBackup;
   requireBackup?: boolean;
+  excludePrefixes?: string[];
 }
 
 export interface SnapshotRetentionResult {
@@ -62,6 +63,17 @@ export class LocalSnapshotStore implements SnapshotStore {
     return absolutePath;
   }
 
+  private async resolveExistingReference(reference: string): Promise<string> {
+    const lexicalPath = this.resolveReference(reference);
+    const rootPath = await realpath(this.directory);
+    const actualPath = await realpath(lexicalPath);
+    const relativePath = relative(rootPath, actualPath);
+    if (relativePath.startsWith('..') || isAbsolute(relativePath) || relativePath.split(sep).includes('..') || relativePath === '') {
+      throw new Error('Snapshot reference escapes the snapshot directory');
+    }
+    return actualPath;
+  }
+
   resolvePath(reference: string): string {
     return this.resolveReference(reference);
   }
@@ -79,9 +91,13 @@ export class LocalSnapshotStore implements SnapshotStore {
     for (const entry of entries) {
       const reference = prefix ? `${prefix}/${entry.name}` : entry.name;
       const absolutePath = resolve(directory, entry.name);
-      if (entry.isDirectory()) {
+      // Do not follow symlinks while enumerating retention candidates. A
+      // symlink may point outside the configured snapshot root and must never
+      // turn an external image into a local retention target.
+      const metadata = await lstat(absolutePath);
+      if (metadata.isDirectory()) {
         references.push(...await this.imageReferences(absolutePath, reference));
-      } else if (/\.(?:jpe?g|png)$/i.test(entry.name)) {
+      } else if (metadata.isFile() && /\.(?:jpe?g|png)$/i.test(entry.name)) {
         references.push(reference);
       }
     }
@@ -99,7 +115,13 @@ export class LocalSnapshotStore implements SnapshotStore {
     const extension = snapshot.mimeType === 'image/png' ? 'png' : 'jpg';
     const filename = `${timestamp}-${randomUUID()}.${extension}`;
     const absolutePath = resolve(cameraDirectory, filename);
-    await writeFile(absolutePath, Buffer.from(snapshot.base64, 'base64'));
+    const rootPath = await realpath(this.directory);
+    const actualCameraDirectory = await realpath(cameraDirectory);
+    const cameraRelative = relative(rootPath, actualCameraDirectory);
+    if (cameraRelative.startsWith('..') || isAbsolute(cameraRelative) || cameraRelative.split(sep).includes('..')) {
+      throw new Error('Snapshot camera directory escapes the snapshot directory');
+    }
+    await writeFile(absolutePath, Buffer.from(snapshot.base64, 'base64'), { mode: 0o600, flag: 'wx' });
 
     const reference = relative(this.directory, absolutePath).split('\\').join('/');
     return basename(cameraDirectory) === camera ? `${camera}/${filename}` : reference;
@@ -124,11 +146,11 @@ export class LocalSnapshotStore implements SnapshotStore {
   }
 
   async read(reference: string): Promise<Buffer> {
-    return readFile(this.resolveReference(reference));
+    return readFile(await this.resolveExistingReference(reference));
   }
 
   async remove(reference: string): Promise<void> {
-    await rm(this.resolveReference(reference), { force: true });
+    await rm(await this.resolveExistingReference(reference), { force: true });
   }
 }
 
@@ -194,6 +216,7 @@ export class SnapshotRetentionService {
   private readonly maxAgeDays: number;
   private readonly backup?: SnapshotBackup;
   private readonly requireBackup: boolean;
+  private readonly excludePrefixes: string[];
 
   constructor(
     private readonly store: LocalSnapshotStore,
@@ -205,11 +228,17 @@ export class SnapshotRetentionService {
     }
     this.backup = options.backup;
     this.requireBackup = options.requireBackup ?? true;
+    this.excludePrefixes = (options.excludePrefixes ?? [])
+      .map((prefix) => prefix.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, ''))
+      .filter(Boolean)
+      .map((prefix) => `${prefix}/`);
   }
 
   async run(now = new Date()): Promise<SnapshotRetentionResult> {
     const cutoff = new Date(now.getTime() - this.maxAgeDays * 24 * 60 * 60 * 1000);
-    const candidates = await this.store.listOlderThan(cutoff);
+    const candidates = (await this.store.listOlderThan(cutoff)).filter((candidate) => (
+      !this.excludePrefixes.some((prefix) => candidate.reference === prefix.slice(0, -1) || candidate.reference.startsWith(prefix))
+    ));
     const result: SnapshotRetentionResult = {
       cutoff: cutoff.toISOString(),
       scanned: candidates.length,
