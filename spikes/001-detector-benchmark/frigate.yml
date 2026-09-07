@@ -1,0 +1,31 @@
+mqtt:
+  enabled: false
+
+auth:
+  enabled: false
+
+detectors:
+  cpu1:
+    type: cpu
+    num_threads: 2
+
+cameras:
+  front:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: http://host.docker.internal:8765/stream.mjpg
+          roles:
+            - detect
+    detect:
+      enabled: true
+      width: 320
+      height: 240
+      fps: 2
+    objects:
+      track:
+        - person
+    snapshots:
+      enabled: false
+    record:
+      enabled: false

@@ -1,0 +1,55 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+data/
+*.log
+
+# Local Python environments and generated caches
+**/.venv/
+**/__pycache__/
+*.py[cod]
+
+# Credentials and local secrets
+**/credentials*.json
+**/*token*.json
+**/*secret*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local models and large binary assets
+models/
+spikes/**/models/
+*.onnx
+*.traineddata
+
+# Private or generated media/recording artifacts
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.webm
+*.mkv
+*.mp4
+*.png
+*.jpg
+*.jpeg
+spikes/**/dataset/
+spikes/**/frigate-*/
+spikes/**/results/
+
+# Local databases, exports, backups and OS artifacts
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.bak
+*.bak-*
+*.tmp
+*.exports
+*.timeline
+*.vacuum
+nul
